@@ -1,0 +1,6 @@
+{
+  "schema": "graybox.questions/v1",
+  "questions": [
+    {"id": "Q-003", "question": "Is refunding a cancelled paid order this domain's job?", "blocking": false, "affects": ["REQ-002"], "assumption": "Refunds belong to another domain; this one only changes state"}
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "_note": "limits are provisional: the spec leaves them open (Q-007, Q-012). decider.url must point at the real decision model.",
+  "lang": "kotlin",
+  "decider": { "url": "http://127.0.0.1:18765/decide", "model": "decider-model", "api_key_env": "GRAYBOX_DECIDER_KEY", "timeout_seconds": 30 },
+  "limits": { "small_retries": 2, "large_retries": 1, "confidence_threshold": 0.8 }
+}

@@ -1,0 +1,8 @@
+{
+  "schema": "graybox.manifest/v1",
+  "requirements": [
+    {"id": "REQ-001", "text": "Paying a pending order makes it paid", "tests": ["testREQ001_payMovesPendingToPaid"], "coverage": "full"},
+    {"id": "REQ-002", "text": "A shipped order cannot be cancelled", "tests": ["testREQ002_shippedCannotBeCancelled"], "coverage": "full"},
+    {"id": "REQ-003", "text": "An unknown order throws NotFoundException", "tests": ["testREQ003_unknownOrderThrowsNotFound"], "coverage": "full"}
+  ]
+}

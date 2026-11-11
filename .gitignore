@@ -1,0 +1,10 @@
+node_modules/
+__pycache__/
+/graybox
+examples/*/order/.graybox/api.lock
+examples/*/order/.graybox/plan.json
+examples/*/order/.graybox/decisions.jsonl
+examples/*/order/.graybox/verify.json
+build/
+adapters/jvm/lib/
+adapters/jvm/.classes/

@@ -1,0 +1,5 @@
+{
+  "include": ["order", "tests"],
+  "typeCheckingMode": "strict",
+  "reportUnusedImport": "warning"
+}
