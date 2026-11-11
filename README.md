@@ -24,7 +24,20 @@ adapters/python        Python 어댑터 (표준 ast, pyright strict)
 adapters/ts            TypeScript 어댑터 (typescript 5.9 컴파일러 API, tsc, node --test)
 adapters/jvm           Java 어댑터 (JavaParser, javac, JUnit 6)와 Kotlin 어댑터 (컴파일러 PSI, kotlinc, JUnit 6)
 examples/{go,python,ts,java,kotlin}/order   언어별 주문 도메인 그레이박스
+cmd/polybench          벤치마크 실행기: Aider Polyglot, SWE-bench
+internal/bench         벤치마크 조건들 (단독, graybox, 작은 모델 먼저, 조각 읽기)
+adapters/python/slice.py   파일에서 수정에 필요한 부분만 잘라 내는 도구
+scripts/bench          문제 검증과 결과 표 스크립트
+docs/findings.md       벤치마크 결과
 ```
+
+## 벤치마크 결과
+
+이 도구의 방식(큰 모델이 구조를 쓰고 작은 모델이 본문을 채움)은 측정에서 비용을 줄이지 못했습니다. 대신 큰 모델의 비용이 어디서 나오는지와, 그중 무엇을 작은 모델로 넘길 수 있는지를 쟀습니다. 자세한 수치는 [docs/findings.md](docs/findings.md)에 있습니다.
+
+- 완전한 인수 테스트가 있으면 작은 모델로 충분했습니다.
+- 기존 코드 수정에서 큰 모델 비용의 80%는 파일 읽기였습니다. 작은 모델이 읽고 고르고, 큰 모델이 조각만 보고 지시하고, 작은 모델이 편집하면 비용이 64% 줄었고 통과 수는 통계적으로 구분되지 않았습니다.
+- 모델이 내리는 통과 판정은 13~40%가 틀렸습니다.
 
 ## 사용법
 
