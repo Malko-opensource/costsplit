@@ -44,7 +44,7 @@ func (f *fakeDecider) Decide(_ context.Context, _ string, qs map[string]decider.
 		}
 		conf := 0.95
 		switch {
-		case f.mode == "fail_req002" && k == "REQ-002":
+		case f.mode == "fail_req002" && k == "REQ-002" && q.Criteria["fail_logic"] != "":
 			choice = "fail_logic"
 		case f.mode == "low":
 			conf = 0.4

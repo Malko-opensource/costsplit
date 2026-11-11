@@ -8,6 +8,7 @@
 //	preconditions {}                  -> {"checks":[...]}
 //	list_tests    {}                  -> {"tests":[...]}
 //	api_snapshot  {}                  -> {"lines":[...]}
+//	stubs         {}                  -> {"stubs":[...]}
 //
 // The working directory is the project root.
 package extadapter
@@ -34,6 +35,7 @@ type reply struct {
 	Checks []adapter.Check `json:"checks"`
 	Tests  []string        `json:"tests"`
 	Lines  []string        `json:"lines"`
+	Stubs  []string        `json:"stubs"`
 }
 
 func (a *Adapter) call(op string, in any) (reply, error) {
@@ -99,4 +101,10 @@ func (a *Adapter) APISnapshot() ([]string, error) {
 	r, err := a.call("api_snapshot", struct{}{})
 	sort.Strings(r.Lines)
 	return r.Lines, err
+}
+
+func (a *Adapter) Stubs() ([]string, error) {
+	r, err := a.call("stubs", struct{}{})
+	sort.Strings(r.Stubs)
+	return r.Stubs, err
 }

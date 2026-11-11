@@ -33,17 +33,26 @@ type Outcome struct {
 	Failures      []Failure `json:"failures,omitempty"`
 }
 
-// PlanQuestions asks, per target symbol, whether it is the right place to
-// satisfy its requirements.
+// PlanQuestions asks one question per requirement: are the symbols the plan
+// assigns to it, taken together, where it gets implemented and tested?
+// Asking per symbol instead made tests and helpers look like wrong targets,
+// because none of them satisfies a requirement alone (found in the pilot run).
 func PlanQuestions(targets map[string][]string) map[string]decider.Question {
-	qs := map[string]decider.Question{}
+	byReq := map[string][]string{}
 	for symbol, reqs := range targets {
-		qs[symbol] = decider.Question{
+		for _, r := range reqs {
+			byReq[r] = append(byReq[r], symbol)
+		}
+	}
+	qs := map[string]decider.Question{}
+	for req, syms := range byReq {
+		sort.Strings(syms)
+		qs[req] = decider.Question{
 			Type:         "choice",
-			Instructions: "Can implementing the body of " + symbol + " satisfy " + joinReqs(reqs) + "?",
+			Instructions: "The plan assigns " + req + " to: " + joinReqs(syms) + ". Together, can these stub bodies implement and test it?",
 			Criteria: map[string]string{
-				"ok":           "This symbol is where these requirements are implemented",
-				"wrong_target": "These requirements are implemented elsewhere; choose another stub",
+				"ok":           "These symbols are where this requirement is implemented and tested",
+				"wrong_target": "The logic this requirement needs lives in a stub that is not assigned to it",
 				"unsure":       "Cannot judge from the given information",
 			},
 		}

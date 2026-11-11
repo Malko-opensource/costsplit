@@ -5,6 +5,7 @@ Protocol: `adapter.py <op>` reads one JSON object on stdin and prints one JSON
 object. The working directory is the project root.
 
 Symbols look like "order.service:Service.apply" or "order.service:make_service".
+A stub body is `pass`, `raise NotImplementedError`, or (tests) `self.skipTest(...)`.
 Strict type checking with pyright is required (D-019).
 """
 from __future__ import annotations
@@ -22,6 +23,25 @@ from typing import Any
 ROOT = Path.cwd()
 HERE = Path(__file__).resolve().parent
 SKIP_DIRS = {".graybox", "node_modules", "__pycache__", ".git", ".venv", "venv"}
+
+# Existing-repository mode (set by the caller; all optional):
+#   GRAYBOX_PY_SCOPE       comma-separated files the graybox covers (default: every .py file)
+#   GRAYBOX_PY_TEST_CMD    test command, run through the shell (default: unittest discover)
+#   GRAYBOX_PY_TYPECHECK   "off" waives strict typing for legacy code (deviation from D-019)
+#   GRAYBOX_PY_STUB_MARKER only `raise NotImplementedError("<marker>")` counts as a stub, so
+#                          abstract methods already in the repository are not taken for stubs
+SCOPE = [s for s in os.environ.get("GRAYBOX_PY_SCOPE", "").split(",") if s]
+TEST_CMD = os.environ.get("GRAYBOX_PY_TEST_CMD", "")
+TYPECHECK_OFF = os.environ.get("GRAYBOX_PY_TYPECHECK", "") == "off"
+STUB_MARKER = os.environ.get("GRAYBOX_PY_STUB_MARKER", "")
+
+
+def fn_name(n: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
+    """Property setters and deleters share the getter's name: tell them apart."""
+    for d in n.decorator_list:
+        if isinstance(d, ast.Attribute) and d.attr in ("setter", "deleter"):
+            return f"{n.name}@{d.attr}"
+    return n.name
 
 
 def out(obj: dict[str, Any]) -> None:
@@ -53,7 +73,7 @@ def find(symbol: str) -> tuple[Path, str, ast.FunctionDef | ast.AsyncFunctionDef
         last = i == len(parts) - 1
         match = None
         for n in nodes:
-            if last and isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == part:
+            if last and isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and fn_name(n) == part:
                 match = n
             elif not last and isinstance(n, ast.ClassDef) and n.name == part:
                 match = n
@@ -77,6 +97,11 @@ def is_stub(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     if len(body) != 1:
         return False
     st = body[0]
+    if STUB_MARKER and not (isinstance(st, ast.Expr) and isinstance(st.value, ast.Call)):
+        return (isinstance(st, ast.Raise) and isinstance(st.exc, ast.Call) and len(st.exc.args) == 1
+                and isinstance(st.exc.args[0], ast.Constant) and st.exc.args[0].value == STUB_MARKER)
+    if isinstance(st, ast.Pass):
+        return True
     if isinstance(st, ast.Raise) and st.exc is not None:
         exc = st.exc.func if isinstance(st.exc, ast.Call) else st.exc
         name = exc.id if isinstance(exc, ast.Name) else exc.attr if isinstance(exc, ast.Attribute) else ""
@@ -126,6 +151,8 @@ def op_apply(req: dict[str, Any]) -> dict[str, Any]:
 # ---------- files ----------
 
 def py_files() -> list[Path]:
+    if SCOPE:
+        return sorted(ROOT / s for s in SCOPE if (ROOT / s).is_file())
     files: list[Path] = []
     for dirpath, dirnames, filenames in os.walk(ROOT):
         dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")]
@@ -137,7 +164,7 @@ def py_files() -> list[Path]:
 
 def is_test_file(p: Path) -> bool:
     rel = p.relative_to(ROOT)
-    return rel.parts[0] == "tests" or p.name.startswith("test_")
+    return rel.parts[0] == "tests" or p.name.startswith("test_") or p.name.endswith("_test.py")
 
 
 def module_name(p: Path) -> str:
@@ -184,26 +211,36 @@ def op_checks(_: dict[str, Any]) -> dict[str, Any]:
     if bad:
         return {"checks": checks}
 
-    if shutil.which("ruff"):
+    if SCOPE:
+        checks.append({"name": "lint", "status": "skipped", "detail": "scoped run"})
+    elif shutil.which("ruff"):
         code, text = run(["ruff", "check", "."])
         checks.append({"name": "lint", "status": "pass" if code == 0 else "fail", "detail": tail(text) if code else ""})
     else:
         checks.append({"name": "lint", "status": "skipped", "detail": "ruff not installed"})
 
     pr = pyright_cmd()
-    if pr is None:
+    if TYPECHECK_OFF:
+        checks.append({"name": "typecheck", "status": "skipped", "detail": "waived by GRAYBOX_PY_TYPECHECK=off"})
+    elif pr is None:
         checks.append({"name": "typecheck", "status": "fail", "detail": "pyright not installed; strict typing is required (D-019)"})
     else:
         code, text = run(pr)
         checks.append({"name": "typecheck", "status": "pass" if code == 0 else "fail", "detail": tail(text) if code else ""})
 
-    test_dir = "tests" if (ROOT / "tests").is_dir() else "."
-    code, text = run([sys.executable, "-m", "unittest", "discover", "-s", test_dir, "-t", "."])
+    if TEST_CMD:
+        p = subprocess.run(TEST_CMD, cwd=ROOT, capture_output=True, text=True, shell=True)
+        code, text = p.returncode, (p.stdout + p.stderr).strip()
+    else:
+        test_dir = "tests" if (ROOT / "tests").is_dir() else "."
+        code, text = run([sys.executable, "-m", "unittest", "discover", "-s", test_dir, "-t", "."])
     checks.append({"name": "test", "status": "pass" if code == 0 else "fail", "detail": tail(text) if code else ""})
     return {"checks": checks}
 
 
 def op_preconditions(_: dict[str, Any]) -> dict[str, Any]:
+    if TYPECHECK_OFF:
+        return {"checks": [{"name": "strict_typing", "status": "skipped", "detail": "waived by GRAYBOX_PY_TYPECHECK=off"}]}
     cfg = ROOT / "pyrightconfig.json"
     if not cfg.is_file():
         return {"checks": [{"name": "strict_typing", "status": "fail", "detail": "pyrightconfig.json missing; strict typing is required (D-019)"}]}
@@ -264,7 +301,25 @@ def op_api_snapshot(_: dict[str, Any]) -> dict[str, Any]:
     return {"lines": sorted(" ".join(l.split()) for l in lines)}
 
 
+def op_stubs(_: dict[str, Any]) -> dict[str, Any]:
+    names: list[str] = []
+    for f in py_files():
+        mod = module_name(f)
+        tree = ast.parse(f.read_text())
+
+        def walk(nodes: list[ast.stmt], prefix: str) -> None:
+            for n in nodes:
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and is_stub(n):
+                    names.append(f"{mod}:{prefix}{fn_name(n)}")
+                elif isinstance(n, ast.ClassDef):
+                    walk(n.body, f"{prefix}{n.name}.")
+
+        walk(tree.body, "")
+    return {"stubs": sorted(names)}
+
+
 OPS = {
+    "stubs": op_stubs,
     "resolve": op_resolve,
     "apply": op_apply,
     "checks": op_checks,

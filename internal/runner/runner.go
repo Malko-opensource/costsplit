@@ -202,6 +202,80 @@ func (r *Runner) Apply(ctx context.Context, task string, model policy.Model, sym
 	return res, r.log(led, res, symbol)
 }
 
+// ApplyAll inserts several bodies as one attempt: every symbol must be in the
+// accepted plan, mechanical checks run once, and the done gate judges all
+// requirements of the plan in one decider call (D-016).
+func (r *Runner) ApplyAll(ctx context.Context, task string, model policy.Model, bodies map[string]string) (Result, error) {
+	res := Result{Gate: "done", Task: task, Model: string(model)}
+	led := ledger.Ledger{Path: r.path("decisions.jsonl")}
+	n, err := led.Attempts(task, "done", string(model))
+	if err != nil {
+		return res, err
+	}
+	res.Attempt = n + 1
+
+	p, err := manifest.LoadPlan(r.path("plan.json"))
+	if err != nil {
+		return res, fmt.Errorf("no accepted plan: %w", err)
+	}
+	inPlan := map[string]bool{}
+	seen := map[string]bool{}
+	var reqs []string
+	for _, t := range p.Targets {
+		inPlan[t.Symbol] = true
+		for _, id := range t.Reqs {
+			if !seen[id] {
+				seen[id] = true
+				reqs = append(reqs, id)
+			}
+		}
+	}
+	sort.Strings(reqs)
+	m, err := manifest.LoadManifest(r.path("manifest.json"))
+	if err != nil {
+		return res, err
+	}
+
+	symbols := make([]string, 0, len(bodies))
+	for s := range bodies {
+		symbols = append(symbols, s)
+	}
+	sort.Strings(symbols)
+	var applyErrs []string
+	for _, s := range symbols {
+		if !inPlan[s] {
+			applyErrs = append(applyErrs, s+": not in the accepted plan")
+			continue
+		}
+		if err := r.A.Apply(s, bodies[s]); err != nil {
+			applyErrs = append(applyErrs, s+": "+err.Error())
+		}
+	}
+	if len(applyErrs) > 0 {
+		res.Checks = []adapter.Check{fail("apply", strings.Join(applyErrs, "; "))}
+	} else {
+		res.Checks = r.mechanical(m)
+	}
+	r.writeVerify(res.Checks)
+	if !adapter.AllPass(res.Checks) {
+		res.Feedback = failDetails(res.Checks)
+		res.Next = policy.Decide(model, res.Attempt, policy.SigFail, r.Limits, false)
+		return res, r.log(led, res, strings.Join(symbols, ","))
+	}
+
+	var b strings.Builder
+	for _, id := range reqs {
+		req, _ := m.Req(id)
+		fmt.Fprintf(&b, "%s: %s\n", id, req.Text)
+	}
+	for _, s := range symbols {
+		fmt.Fprintf(&b, "--- changed: %s ---\n%s\n", s, bodies[s])
+	}
+	b.WriteString("--- mechanical checks: all pass ---\n")
+	r.ask(ctx, &res, verdict.DoneQuestions(reqs), b.String(), false)
+	return res, r.log(led, res, strings.Join(symbols, ","))
+}
+
 // Check runs the mechanical checks only; it is how direct edits are caught
 // (D-014, AC-4).
 func (r *Runner) Check() (Result, error) {
@@ -247,6 +321,15 @@ func (r *Runner) ask(ctx context.Context, res *Result, qs map[string]decider.Que
 		res.Feedback = append(res.Feedback, fmt.Sprintf("%s: %s", f.Key, f.Description))
 	}
 	sig := policy.Classify(string(out.Result), out.MinConfidence, r.Limits)
+	switch {
+	case planGate && r.Limits.AdvisoryPlan:
+		sig = policy.SigPass
+	case !planGate && r.Limits.TestsDecideDone:
+		sig = policy.SigPass
+		if a, ok := answers[verdict.TestGamingKey]; ok && a.Choice == "yes" {
+			sig = policy.SigFail
+		}
+	}
 	res.Next = policy.Decide(policy.Model(res.Model), res.Attempt, sig, r.Limits, planGate)
 }
 

@@ -60,6 +60,7 @@ fun main(args: Array<String>) {
             "checks" -> mapOf("checks" to checks())
             "preconditions" -> mapOf("checks" to emptyList<Any>())
             "list_tests" -> mapOf("tests" to listTests())
+            "stubs" -> mapOf("stubs" to stubs())
             "api_snapshot" -> mapOf("lines" to apiSnapshot())
             else -> mapOf("error" to "usage: KotlinAdapter resolve|apply|checks|preconditions|list_tests|api_snapshot")
         }
@@ -172,6 +173,23 @@ fun apply(symbol: String, body: String): Map<String, Any> {
         return mapOf("error" to "apply would change the signature")
     }
     return emptyMap()
+}
+
+fun stubs(): List<String> {
+    val out = mutableListOf<String>()
+    fun walk(prefix: String, decls: List<KtDeclaration>) {
+        for (d in decls) when (d) {
+            is KtClassOrObject -> walk("$prefix${d.name}.", d.declarations)
+            is KtNamedFunction -> if (isStub(d)) out += prefix.trimEnd('.') + "#" + d.name
+            else -> {}
+        }
+    }
+    for (p in ktFiles(MAIN) + ktFiles(TEST)) {
+        val f = parse(p)
+        val pkg = f.packageFqName.asString().let { if (it.isEmpty()) "" else "$it." }
+        walk(pkg, f.declarations)
+    }
+    return out.sorted()
 }
 
 // ---------- checks ----------

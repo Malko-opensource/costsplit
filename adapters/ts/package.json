@@ -1,1 +1,1 @@
-{ "private": true, "name": "graybox-ts-adapter", "type": "module", "dependencies": { "typescript": "5.9.3" } }
+{"private":true,"name":"graybox-ts-adapter","type":"module","dependencies":{"@types/node":"26.6.6","typescript":"5.9.3"}}

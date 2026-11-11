@@ -8,3 +8,5 @@ examples/*/order/.graybox/verify.json
 build/
 adapters/jvm/lib/
 adapters/jvm/.classes/
+/bin/
+bench-results/

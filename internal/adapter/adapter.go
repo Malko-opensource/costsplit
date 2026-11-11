@@ -36,6 +36,8 @@ type Adapter interface {
 	// APISnapshot returns the public surface plus graybox data (state tables),
 	// one normalized line per item, sorted.
 	APISnapshot() ([]string, error)
+	// Stubs lists symbols whose bodies are still stubs, in Resolve's format.
+	Stubs() ([]string, error)
 	// Preconditions are checks that must pass before a graybox can be locked,
 	// e.g. strict type checking for Python and JS (D-019).
 	Preconditions() []Check

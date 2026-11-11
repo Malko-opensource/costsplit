@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"fmt"
 	"go/ast"
-	"go/format"
 	"go/parser"
 	"go/printer"
 	"go/token"
@@ -20,6 +19,7 @@ import (
 	"strings"
 
 	"github.com/local/graybox/internal/adapter"
+	"golang.org/x/tools/imports"
 )
 
 type Adapter struct{ Dir string }
@@ -142,7 +142,7 @@ func signature(fset *token.FileSet, fd *ast.FuncDecl) string {
 	return normalize(b.String())
 }
 
-// isStub: body is exactly panic("not implemented") or t.Skip(...).
+// isStub: body is exactly panic(<string literal>) or t.Skip(...).
 func isStub(fd *ast.FuncDecl) bool {
 	if fd.Body == nil || len(fd.Body.List) != 1 {
 		return false
@@ -157,10 +157,12 @@ func isStub(fd *ast.FuncDecl) bool {
 	}
 	switch fn := call.Fun.(type) {
 	case *ast.Ident:
+		// panic("not implemented"), or any string literal such as
+		// Exercism's panic("Please implement the Solve function").
 		if fn.Name == "panic" && len(call.Args) == 1 {
-			if lit, ok := call.Args[0].(*ast.BasicLit); ok {
-				v, _ := strconv.Unquote(lit.Value)
-				return v == "not implemented"
+			if lit, ok := call.Args[0].(*ast.BasicLit); ok && lit.Kind == token.STRING {
+				_, err := strconv.Unquote(lit.Value)
+				return err == nil
 			}
 		}
 	case *ast.SelectorExpr:
@@ -195,7 +197,9 @@ func (a *Adapter) Apply(symbol, body string) error {
 	out.Write(f.src[:lb+1])
 	out.WriteString("\n" + strings.Trim(body, "\n") + "\n")
 	out.Write(f.src[rb:])
-	formatted, err := format.Source(out.Bytes())
+	// Bodies cannot add imports themselves and Go rejects unused ones, so
+	// imports are fixed the way goimports does (Q-014 for Go).
+	formatted, err := imports.Process(f.path, out.Bytes(), &imports.Options{Comments: true, TabIndent: true, TabWidth: 8, FormatOnly: false})
 	if err != nil {
 		return fmt.Errorf("result does not format: %w", err)
 	}
@@ -305,6 +309,39 @@ func (a *Adapter) APISnapshot() ([]string, error) {
 					out = append(out, pkg+": "+d.Tok.String()+" "+normalize(b.String()))
 				}
 			}
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// Stubs lists stub functions as pkg.Func, pkg.(*T).M or pkg.(T).M.
+func (a *Adapter) Stubs() ([]string, error) {
+	files, err := a.goFiles()
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, p := range files {
+		fset := token.NewFileSet()
+		f, err := parser.ParseFile(fset, p, nil, 0)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", p, err)
+		}
+		for _, d := range f.Decls {
+			fd, ok := d.(*ast.FuncDecl)
+			if !ok || !isStub(fd) {
+				continue
+			}
+			name := f.Name.Name + "." + fd.Name.Name
+			if r := recvName(fd); r != "" {
+				star := ""
+				if _, ok := fd.Recv.List[0].Type.(*ast.StarExpr); ok {
+					star = "*"
+				}
+				name = fmt.Sprintf("%s.(%s%s).%s", f.Name.Name, star, r, fd.Name.Name)
+			}
+			out = append(out, name)
 		}
 	}
 	sort.Strings(out)

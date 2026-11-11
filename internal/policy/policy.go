@@ -20,6 +20,15 @@ type Limits struct {
 	SmallRetries        int     `json:"small_retries"`
 	LargeRetries        int     `json:"large_retries"`
 	ConfidenceThreshold float64 `json:"confidence_threshold"`
+	// AdvisoryPlan: the plan gate never blocks; decider objections are only
+	// returned as feedback. The full Polyglot run showed the plan gate
+	// rejecting plans that worked (5 of 6 blocks were solvable).
+	AdvisoryPlan bool `json:"advisory_plan,omitempty"`
+	// TestsDecideDone: when the mechanical checks pass, only the test-gaming
+	// answer can fail the done gate. Per-requirement answers are recorded but
+	// do not decide: self-reported confidence did not catch wrong code
+	// (21 false passes of 156, Q-012).
+	TestsDecideDone bool `json:"tests_decide_done,omitempty"`
 }
 
 type Model string

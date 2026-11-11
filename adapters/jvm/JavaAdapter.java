@@ -4,7 +4,7 @@
 // Reads one JSON object on stdin, prints one JSON object.
 //
 // Layout: src/main/java, src/test/java (JUnit 6). Symbols look like
-// "com.acme.order.Service#apply". Stubs are `throw new UnsupportedOperationException(...)`;
+// "com.acme.order.Service#apply" (constructors: "Service#<init>"). Stubs are `throw new UnsupportedOperationException(...)`;
 // skipped tests call `Assumptions.abort(...)`.
 import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.StaticJavaParser;
@@ -44,6 +44,7 @@ public class JavaAdapter {
                 case "checks" -> Map.of("checks", checks());
                 case "preconditions" -> Map.of("checks", List.of());
                 case "list_tests" -> Map.of("tests", listTests());
+                case "stubs" -> Map.of("stubs", stubs());
                 case "api_snapshot" -> Map.of("lines", apiSnapshot());
                 default -> Map.of("error", "usage: JavaAdapter resolve|apply|checks|preconditions|list_tests|api_snapshot");
             };
@@ -59,7 +60,7 @@ public class JavaAdapter {
 
     // ---------- symbols ----------
 
-    record Found(Path file, String text, CompilationUnit cu, MethodDeclaration method) {}
+    record Found(Path file, String text, CompilationUnit cu, CallableDeclaration<?> method, BlockStmt body) {}
 
     static Found find(String symbol) throws Exception {
         int hash = symbol.indexOf('#');
@@ -84,22 +85,31 @@ public class JavaAdapter {
                     scope = type.getMembers();
                 }
                 if (type == null) continue;
+                if (name.equals("<init>")) {
+                    var cs = type.getConstructors();
+                    if (cs.size() > 1) throw new LookupException(symbol + " has several constructors; overloads are not supported");
+                    if (cs.size() == 1) return new Found(f, text, cu, cs.get(0), cs.get(0).getBody());
+                    continue;
+                }
                 List<MethodDeclaration> ms = type.getMethodsByName(name);
                 if (ms.size() > 1) throw new LookupException(symbol + " is overloaded; overloads are not supported");
-                if (ms.size() == 1) return new Found(f, text, cu, ms.get(0));
+                if (ms.size() == 1) {
+                    MethodDeclaration m = ms.get(0);
+                    if (m.getBody().isEmpty()) throw new LookupException(symbol + " has no body");
+                    return new Found(f, text, cu, m, m.getBody().get());
+                }
             }
         }
         throw new LookupException("symbol " + symbol + " not found");
     }
 
-    static String signature(MethodDeclaration m) {
+    static String signature(CallableDeclaration<?> m) {
         return norm(m.getDeclarationAsString(true, true, true));
     }
 
-    static boolean isStub(MethodDeclaration m) {
-        Optional<BlockStmt> b = m.getBody();
-        if (b.isEmpty() || b.get().getStatements().size() != 1) return false;
-        Statement s = b.get().getStatement(0);
+    static boolean isStub(BlockStmt b) {
+        if (b.getStatements().size() != 1) return false;
+        Statement s = b.getStatement(0);
         if (s instanceof ThrowStmt t && t.getExpression() instanceof ObjectCreationExpr oc)
             return oc.getType().getNameAsString().equals("UnsupportedOperationException");
         if (s instanceof ExpressionStmt e && e.getExpression() instanceof MethodCallExpr mc)
@@ -112,7 +122,7 @@ public class JavaAdapter {
         Map<String, Object> s = new LinkedHashMap<>();
         s.put("name", symbol);
         s.put("file", ROOT.relativize(f.file).toString());
-        s.put("is_stub", isStub(f.method));
+        s.put("is_stub", isStub(f.body));
         s.put("signature", signature(f.method));
         return Map.of("symbol", s);
     }
@@ -130,8 +140,7 @@ public class JavaAdapter {
             return Map.of("error", "body does not parse: " + firstLine(e.getMessage()));
         }
         Found f = find(symbol);
-        BlockStmt block = f.method.getBody().orElseThrow(() -> new LookupException(symbol + " has no body"));
-        var r = block.getRange().orElseThrow();
+        var r = f.body.getRange().orElseThrow();
         int open = offset(f.text, r.begin.line, r.begin.column);
         int close = offset(f.text, r.end.line, r.end.column);
         int lineStart = f.text.lastIndexOf('\n', offset(f.text, f.method.getRange().get().begin.line, 1)) + 1;
@@ -151,6 +160,28 @@ public class JavaAdapter {
         List<String> lines = Arrays.asList(body.replaceAll("^\n+|\n+$", "").split("\n", -1));
         int min = lines.stream().filter(l -> !l.isBlank()).mapToInt(l -> l.length() - l.stripLeading().length()).min().orElse(0);
         return lines.stream().map(l -> l.isBlank() ? "" : inner + l.substring(min)).collect(Collectors.joining("\n"));
+    }
+
+    static List<String> stubs() throws Exception {
+        List<String> out = new ArrayList<>();
+        for (Path f : concat(javaFiles(MAIN), javaFiles(TEST))) {
+            CompilationUnit cu = StaticJavaParser.parse(f);
+            String pkg = cu.getPackageDeclaration().map(p -> p.getNameAsString() + ".").orElse("");
+            for (TypeDeclaration<?> t : cu.getTypes()) stubsIn(pkg + t.getNameAsString(), t, out);
+        }
+        Collections.sort(out);
+        return out;
+    }
+
+    static void stubsIn(String fq, TypeDeclaration<?> t, List<String> out) {
+        for (BodyDeclaration<?> m : t.getMembers()) {
+            if (m instanceof MethodDeclaration md && md.getBody().isPresent() && isStub(md.getBody().get()))
+                out.add(fq + "#" + md.getNameAsString());
+            else if (m instanceof ConstructorDeclaration cd && isStub(cd.getBody()))
+                out.add(fq + "#<init>");
+            else if (m instanceof TypeDeclaration<?> nt)
+                stubsIn(fq + "." + nt.getNameAsString(), nt, out);
+        }
     }
 
     // ---------- files ----------
@@ -201,11 +232,14 @@ public class JavaAdapter {
         deleteTree(build);
         Path mainOut = build.resolve("main"), testOut = build.resolve("test");
         String junit = junitJar();
-        List<String> cmd = new ArrayList<>(List.of(bin("javac"), "-Xlint:all", "-Werror", "-d", mainOut.toString()));
+        // Extra libraries a project needs (e.g. org.json) come from GRAYBOX_JAVA_CP.
+        String extra = Optional.ofNullable(System.getenv("GRAYBOX_JAVA_CP")).orElse("");
+        String extraCp = extra.isEmpty() ? "" : ":" + extra;
+        List<String> cmd = new ArrayList<>(List.of(bin("javac"), "-Xlint:all", "-d", mainOut.toString(), "-cp", mainOut + extraCp));
         javaFiles(MAIN).forEach(p -> cmd.add(p.toString()));
         Run r = run(cmd);
         if (r.code == 0 && !javaFiles(TEST).isEmpty()) {
-            List<String> tcmd = new ArrayList<>(List.of(bin("javac"), "-d", testOut.toString(), "-cp", mainOut + ":" + junit));
+            List<String> tcmd = new ArrayList<>(List.of(bin("javac"), "-d", testOut.toString(), "-cp", mainOut + ":" + junit + extraCp));
             javaFiles(TEST).forEach(p -> tcmd.add(p.toString()));
             r = run(tcmd);
         }
@@ -215,7 +249,7 @@ public class JavaAdapter {
             return cs;
         }
         cs.add(check("lint", "skipped", "Checkstyle not configured"));
-        Run t = run(List.of(bin("java"), "-jar", junit, "execute", "--class-path", mainOut + ":" + testOut,
+        Run t = run(List.of(bin("java"), "-jar", junit, "execute", "--class-path", mainOut + ":" + testOut + extraCp,
                 "--scan-class-path", "--disable-banner", "--details=summary", "--fail-if-no-tests"));
         cs.add(check("test", t.code == 0 ? "pass" : "fail", t.code == 0 ? "" : tail(t.out)));
         return cs;
