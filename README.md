@@ -126,3 +126,7 @@ graybox check -dir PROJECT                                  # 파일을 직접 �
 - **공개 API 비교는 자체 스냅샷입니다.** 문서에서 제안한 apidiff, api-extractor, griffe를 쓰지 않고, 선언문을 정규화한 텍스트를 비교합니다.
 - **설치돼 있지 않은 린터는 skipped로 처리합니다.** golangci-lint, ruff, eslint, Checkstyle, ktlint/detekt가 해당합니다.
 - **Go 테스트는 `-race` 없이 돌립니다.**
+
+## 라이선스
+
+MIT. [LICENSE](LICENSE)를 보세요.
