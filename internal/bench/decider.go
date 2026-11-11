@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/local/graybox/internal/decider"
+	"github.com/Malko-opensource/costsplit/internal/decider"
 )
 
 // LLMDecider stands in for the lightweight decision model: a small model

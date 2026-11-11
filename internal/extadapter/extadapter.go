@@ -20,7 +20,7 @@ import (
 	"os/exec"
 	"sort"
 
-	"github.com/local/graybox/internal/adapter"
+	"github.com/Malko-opensource/costsplit/internal/adapter"
 )
 
 type Adapter struct {

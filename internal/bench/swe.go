@@ -13,10 +13,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/local/graybox/internal/extadapter"
-	"github.com/local/graybox/internal/manifest"
-	"github.com/local/graybox/internal/policy"
-	"github.com/local/graybox/internal/runner"
+	"github.com/Malko-opensource/costsplit/internal/extadapter"
+	"github.com/Malko-opensource/costsplit/internal/manifest"
+	"github.com/Malko-opensource/costsplit/internal/policy"
+	"github.com/Malko-opensource/costsplit/internal/runner"
 )
 
 // SWE is one SWE-bench instance: a bug report against an existing repository.

@@ -21,8 +21,8 @@ import (
 	"sync"
 	"text/tabwriter"
 
-	"github.com/local/graybox/internal/bench"
-	"github.com/local/graybox/internal/policy"
+	"github.com/Malko-opensource/costsplit/internal/bench"
+	"github.com/Malko-opensource/costsplit/internal/policy"
 )
 
 func main() {

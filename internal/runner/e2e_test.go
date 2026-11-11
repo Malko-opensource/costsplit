@@ -11,13 +11,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/local/graybox/internal/adapter"
-	"github.com/local/graybox/internal/decider"
-	"github.com/local/graybox/internal/extadapter"
-	"github.com/local/graybox/internal/goadapter"
-	"github.com/local/graybox/internal/manifest"
-	"github.com/local/graybox/internal/policy"
-	"github.com/local/graybox/internal/runner"
+	"github.com/Malko-opensource/costsplit/internal/adapter"
+	"github.com/Malko-opensource/costsplit/internal/decider"
+	"github.com/Malko-opensource/costsplit/internal/extadapter"
+	"github.com/Malko-opensource/costsplit/internal/goadapter"
+	"github.com/Malko-opensource/costsplit/internal/manifest"
+	"github.com/Malko-opensource/costsplit/internal/policy"
+	"github.com/Malko-opensource/costsplit/internal/runner"
 )
 
 // ---- fake decider ----

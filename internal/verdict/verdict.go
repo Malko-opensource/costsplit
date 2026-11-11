@@ -5,7 +5,7 @@ package verdict
 import (
 	"sort"
 
-	"github.com/local/graybox/internal/decider"
+	"github.com/Malko-opensource/costsplit/internal/decider"
 )
 
 // TestGamingKey is the change-wide question asked at the done gate (D-016).

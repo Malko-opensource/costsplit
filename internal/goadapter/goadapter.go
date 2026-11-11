@@ -18,7 +18,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/local/graybox/internal/adapter"
+	"github.com/Malko-opensource/costsplit/internal/adapter"
 	"golang.org/x/tools/imports"
 )
 

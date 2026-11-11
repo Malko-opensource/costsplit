@@ -1,4 +1,4 @@
-module github.com/local/graybox
+module github.com/Malko-opensource/costsplit
 
 go 1.27.1
 

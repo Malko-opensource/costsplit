@@ -14,12 +14,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/local/graybox/internal/adapter"
-	"github.com/local/graybox/internal/decider"
-	"github.com/local/graybox/internal/ledger"
-	"github.com/local/graybox/internal/manifest"
-	"github.com/local/graybox/internal/policy"
-	"github.com/local/graybox/internal/verdict"
+	"github.com/Malko-opensource/costsplit/internal/adapter"
+	"github.com/Malko-opensource/costsplit/internal/decider"
+	"github.com/Malko-opensource/costsplit/internal/ledger"
+	"github.com/Malko-opensource/costsplit/internal/manifest"
+	"github.com/Malko-opensource/costsplit/internal/policy"
+	"github.com/Malko-opensource/costsplit/internal/verdict"
 )
 
 const Dot = ".graybox"
