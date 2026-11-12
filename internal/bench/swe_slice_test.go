@@ -173,3 +173,24 @@ func TestSlicer(t *testing.T) {
 		}
 	})
 }
+
+func TestGoldLinesByFile(t *testing.T) {
+	s := &SWE{gold: `diff --git a/a.py b/a.py
+--- a/a.py
++++ b/a.py
+@@ -3,2 +3,2 @@
+-x = 1
++x = 2
+ y = 1
+diff --git a/b.py b/b.py
+--- a/b.py
++++ b/b.py
+@@ -7,1 +7,2 @@
+ z = 1
++w = 2
+`}
+	want := map[string][]int{"a.py": {3}, "b.py": {7}}
+	if got := s.GoldLinesByFile(); !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}

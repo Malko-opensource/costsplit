@@ -514,3 +514,19 @@ func coversFuncs(env *SWEEnv, work, path string, gold []int, sl *fileSlice) bool
 	}
 	return sl.covers(inFunc)
 }
+
+// GoldLinesByFile maps each file the reference patch touches to the lines of
+// the unpatched file it changes (as goldLines counts them). It is for
+// measuring retrieval only; the patch itself is never shown to a model.
+func (s *SWE) GoldLinesByFile() map[string][]int {
+	out := map[string][]int{}
+	parts := diffFile.FindAllStringSubmatchIndex(s.gold, -1)
+	for i, m := range parts {
+		end := len(s.gold)
+		if i+1 < len(parts) {
+			end = parts[i+1][0]
+		}
+		out[s.gold[m[2]:m[3]]] = goldLines(s.gold[m[0]:end])
+	}
+	return out
+}
