@@ -35,6 +35,12 @@ func TestParseSWEArm(t *testing.T) {
 	if !ok || role != "large" || opt != want {
 		t.Errorf("large-hleanarch2: got %q %+v ok=%v", role, opt, ok)
 	}
+	if _, opt, ok := ParseSWEArm("large-colaarch"); !ok || !opt.Cola || !opt.ColaArch {
+		t.Errorf("large-colaarch: got %+v ok=%v", opt, ok)
+	}
+	if _, _, ok := ParseSWEArm("small-cola"); ok {
+		t.Error("small-cola: the reading model of a cola arm is the large one")
+	}
 	if _, opt, ok := ParseSWEArm("small-locate"); !ok || !opt.LocateOnly {
 		t.Errorf("small-locate: got %+v ok=%v", opt, ok)
 	}
@@ -192,5 +198,14 @@ diff --git a/b.py b/b.py
 	want := map[string][]int{"a.py": {3}, "b.py": {7}}
 	if got := s.GoldLinesByFile(); !reflect.DeepEqual(got, want) {
 		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+func TestStripLineNumbers(t *testing.T) {
+	if got := stripLineNumbers("  12|     x = 1\n  13|     return x"); got != "    x = 1\n    return x" {
+		t.Errorf("got %q", got)
+	}
+	if in := "    x = 1  # 12| not a prefix\n    y = 2"; stripLineNumbers(in) != in {
+		t.Error("text without prefixes must not change")
 	}
 }

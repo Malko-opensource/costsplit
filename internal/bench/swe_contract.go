@@ -41,6 +41,8 @@ type SWEOpt struct {
 	// LocateOnly stops after the slice is built: it measures localization
 	// without paying for a fix.
 	LocateOnly bool
+	Cola       bool // the large model reads a diet-cola view of the file (swe_cola.go)
+	ColaArch   bool // ... writes instructions only; the small model edits
 }
 
 // ParseSWEArm reads arm names like small-ctx, small-tdd and large-oracle.
@@ -74,6 +76,10 @@ func ParseSWEArm(arm string) (role string, opt SWEOpt, ok bool) {
 		return role, SWEOpt{Slice: "small", Lean: true, LocateOnly: true}, true
 	case "hleanarch2":
 		return role, SWEOpt{Slice: "small", Lean: true, Arch: true, More: true}, true
+	case "cola":
+		return role, SWEOpt{Cola: true}, role == "large"
+	case "colaarch":
+		return role, SWEOpt{Cola: true, ColaArch: true}, role == "large"
 	}
 	return "", SWEOpt{}, false
 }
@@ -84,6 +90,9 @@ const sweReproFile = "test_repro_gb.py"
 // names. Without a verifier (ctx) the model answers once; with one (tdd,
 // oracle) it gets the failures back and may edit again.
 func RunSWEContract(ctx context.Context, env *SWEEnv, cfg Config, s *SWE, arm, role string, opt SWEOpt) (res Result) {
+	if opt.Cola {
+		return runSWECola(ctx, env, cfg, s, arm, opt)
+	}
 	if opt.Slice != "" {
 		return runSWESliced(ctx, env, cfg, s, arm, role, opt)
 	}
