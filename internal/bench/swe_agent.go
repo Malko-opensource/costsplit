@@ -60,8 +60,13 @@ const agentMid = "claude-sonnet-5-5"
 func runClaudeAgent(ctx context.Context, model, effort, system, prompt, tools, mcp, work string) (*streamEvent, map[string]int, error) {
 	actx, cancel := context.WithTimeout(ctx, 25*time.Minute)
 	defer cancel()
+	// Built-in tools are on only when the caller lists them: a no-Grep arm must not have them.
+	builtin := ""
+	if strings.Contains(tools, "Grep") {
+		builtin = "Grep,Glob"
+	}
 	cmd := exec.CommandContext(actx, "claude", "-p", "--model", model, "--output-format", "stream-json", "--verbose",
-		"--system-prompt", system, "--tools", "Grep,Glob", "--allowedTools", tools,
+		"--system-prompt", system, "--tools", builtin, "--allowedTools", tools,
 		"--mcp-config", mcp, "--strict-mcp-config", "--setting-sources", "", "--no-session-persistence",
 		"--max-budget-usd", agentBudgetUSD)
 	if effort != "" {
@@ -153,7 +158,27 @@ func RunSWEAgent(ctx context.Context, env *SWEEnv, cfg Config, s *SWE, arm strin
 		}
 	}()
 	step := func(f string, a ...any) { res.Steps = append(res.Steps, fmt.Sprintf(f, a...)) }
+	// Arm names are agent-<mode>[-nogrep][-vague]. nogrep takes Grep and Glob
+	// away, so the index tools are the only way to find code. vague swaps the
+	// issue for a rewrite without identifiers (scripts/bench/vague_issues.py).
 	mode := strings.TrimPrefix(arm, "agent-")
+	vague := strings.HasSuffix(mode, "-vague")
+	mode = strings.TrimSuffix(mode, "-vague")
+	noGrep := strings.HasSuffix(mode, "-nogrep")
+	mode = strings.TrimSuffix(mode, "-nogrep")
+	problem := s.Problem
+	if vague {
+		dir := os.Getenv("COSTSPLIT_VAGUE")
+		if dir == "" {
+			dir = filepath.Join(os.Getenv("HOME"), "bench-data", "swe", "vague")
+		}
+		b, err := os.ReadFile(filepath.Join(dir, s.ID+".md"))
+		if err != nil {
+			res.Outcome, res.Error = "error", err.Error()
+			return res
+		}
+		problem = string(b)
+	}
 	work, cleanup, err := s.prepare(env, arm)
 	if err != nil {
 		res.Outcome, res.Error = "error", err.Error()
@@ -166,15 +191,95 @@ func RunSWEAgent(ctx context.Context, env *SWEEnv, cfg Config, s *SWE, arm strin
 	}
 	side := filepath.Dir(work) // holds the task, ledger and MCP config, outside the repository
 	task, ledger, mcp := filepath.Join(side, "task.md"), filepath.Join(side, "ledger.jsonl"), filepath.Join(side, "mcp.json")
-	if err := os.WriteFile(task, []byte(s.Problem), 0o644); err != nil {
+	if err := os.WriteFile(task, []byte(problem), 0o644); err != nil {
 		res.Outcome, res.Error = "error", err.Error()
 		return res
 	}
-	conf, _ := json.Marshal(map[string]any{"mcpServers": map[string]any{"cola": map[string]any{
-		"command": agentBin(env),
-		"args": []string{"-mode", serverMode, "-work", work, "-python", env.Python, "-root", env.RepoRoot,
-			"-task", task, "-ledger", ledger, "-small", cfg.Small},
-	}}})
+	serverArgs := []string{"-mode", serverMode, "-work", work, "-python", env.Python, "-root", env.RepoRoot,
+		"-task", task, "-ledger", ledger, "-small", cfg.Small}
+	toolsDir := os.Getenv("COSTSPLIT_TOOLS")
+	if toolsDir == "" {
+		toolsDir = filepath.Join(os.Getenv("HOME"), "bench-data", "tools")
+	}
+	cache := filepath.Join(toolsDir, "cache", s.ID)
+	servers := map[string]any{}
+	extraTools, extraSystem := "", ""
+	prep := time.Now()
+	buildIndex := func() (string, error) {
+		db := filepath.Join(side, "index.db")
+		out, err := exec.Command(env.Python, filepath.Join(env.RepoRoot, "adapters/python/index.py"), "build", work, db).CombinedOutput()
+		if err != nil {
+			return "", fmt.Errorf("index: %v: %s", err, tail(string(out), 300))
+		}
+		return db, nil
+	}
+	var prepErr error
+	switch mode {
+	case "db":
+		// Code in a database: a SQLite index of symbols and call edges,
+		// built before the agent starts, queried through extra tools.
+		db, err := buildIndex()
+		prepErr = err
+		serverArgs = append(serverArgs, "-index", db)
+		extraTools = ",mcp__cola__search_code,mcp__cola__symbol,mcp__cola__callers,mcp__cola__callees"
+		extraSystem = "\nThe repository is indexed: search_code finds functions and classes, symbol shows one definition, callers and callees follow calls."
+	case "embed":
+		// Embeddings: every function and class embedded with a local model.
+		npz := filepath.Join(cache, "embed.npz")
+		py := filepath.Join(toolsDir, "embed", "bin", "python")
+		if _, err := os.Stat(npz); err != nil {
+			db, err := buildIndex()
+			if err == nil {
+				os.MkdirAll(cache, 0o755)
+				var out []byte
+				if out, err = exec.Command(py, filepath.Join(env.RepoRoot, "adapters/python/embed.py"), "build", work, db, npz, filepath.Join(toolsDir, "cache", "vec.db")).CombinedOutput(); err != nil {
+					err = fmt.Errorf("embed: %v: %s", err, tail(string(out), 300))
+				}
+			}
+			prepErr = err
+		}
+		serverArgs = append(serverArgs, "-embed", npz, "-embed-python", py)
+		extraTools = ",mcp__cola__semantic_search"
+		extraSystem = "\nThe repository's functions and classes are embedded: semantic_search finds code by meaning."
+	case "graphify":
+		// graphify's code graph (AST extraction, no LLM), served by its own MCP server.
+		graph := filepath.Join(cache, "graphify", "graph.json")
+		if _, err := os.Stat(graph); err != nil {
+			cmd := exec.Command(filepath.Join(toolsDir, "graphify", "bin", "graphify"), "update", ".", "--no-cluster")
+			cmd.Dir = work
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				prepErr = fmt.Errorf("graphify: %v: %s", err, tail(string(out), 300))
+			} else {
+				os.MkdirAll(cache, 0o755)
+				os.RemoveAll(filepath.Join(cache, "graphify"))
+				prepErr = os.Rename(filepath.Join(work, "graphify-out"), filepath.Join(cache, "graphify"))
+			}
+		}
+		os.RemoveAll(filepath.Join(work, "graphify-out"))
+		servers["graphify"] = map[string]any{"command": filepath.Join(toolsDir, "graphify", "bin", "graphify-mcp"), "args": []string{graph}}
+		extraTools = ",mcp__graphify__query_graph,mcp__graphify__get_node,mcp__graphify__get_neighbors,mcp__graphify__shortest_path,mcp__graphify__god_nodes"
+		extraSystem = "\nThe repository has a knowledge graph of its code: the graphify tools query it."
+	case "graft":
+		// graft's wiring graph (no LLM), kept outside the repository, served by its own MCP server.
+		bin, dir := filepath.Join(toolsDir, "graft", "node_modules", ".bin", "graft"), filepath.Join(side, "graft")
+		cmd := exec.Command(bin, "--dir", dir, "build", work)
+		cmd.Env = append(os.Environ(), "DO_NOT_TRACK=1")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			prepErr = fmt.Errorf("graft: %v: %s", err, tail(string(out), 300))
+		}
+		os.RemoveAll(filepath.Join(work, "graft"))
+		servers["graft"] = map[string]any{"command": bin, "args": []string{"--dir", dir, "mcp", work}, "env": map[string]string{"DO_NOT_TRACK": "1"}}
+		extraTools = ",mcp__graft__graft_find_code,mcp__graft__graft_file_api,mcp__graft__graft_trace_calls,mcp__graft__graft_find_all,mcp__graft__graft_repo_map"
+		extraSystem = "\nThe repository has a context graph of its code: the graft tools query it."
+	}
+	if prepErr != nil {
+		res.Outcome, res.Error = "error", prepErr.Error()
+		return res
+	}
+	res.Info["prep_seconds"] = time.Since(prep).Seconds()
+	servers["cola"] = map[string]any{"command": agentBin(env), "args": serverArgs}
+	conf, _ := json.Marshal(map[string]any{"mcpServers": servers})
 	if err := os.WriteFile(mcp, conf, 0o644); err != nil {
 		res.Outcome, res.Error = "error", err.Error()
 		return res
@@ -183,6 +288,13 @@ func RunSWEAgent(ctx context.Context, env *SWEEnv, cfg Config, s *SWE, arm strin
 	if mode == "cola" {
 		tools += ",mcp__cola__show"
 	}
+	system := agentSystem
+	if noGrep {
+		tools = strings.TrimPrefix(tools, "Grep,Glob,")
+		system = strings.Replace(system, "Find the code with Grep and Glob", "Find the code with the search tools described below", 1)
+	}
+	tools += extraTools
+	system += extraSystem
 	model, role := cfg.Large, "large"
 	effort := ""
 	switch mode {
@@ -193,7 +305,7 @@ func RunSWEAgent(ctx context.Context, env *SWEEnv, cfg Config, s *SWE, arm strin
 	case "sonnet":
 		model, role = agentMid, "mid"
 	}
-	prompt := "Fix this issue.\n\n# Issue\n" + s.Problem
+	prompt := "Fix this issue.\n\n# Issue\n" + problem
 	calls := map[string]int{}
 	addUsage := func(ev *streamEvent, role string) {
 		for m, u := range ev.ModelUsage {
@@ -219,7 +331,7 @@ func RunSWEAgent(ctx context.Context, env *SWEEnv, cfg Config, s *SWE, arm strin
 	if mode == "scout" {
 		// The small model explores read-only and writes a brief; the large
 		// model starts from it with the same tools as agent-full.
-		ev, sc, err := runClaudeAgent(ctx, cfg.Small, "", scoutSystem, "Find the code involved in this issue.\n\n# Issue\n"+s.Problem,
+		ev, sc, err := runClaudeAgent(ctx, cfg.Small, "", scoutSystem, "Find the code involved in this issue.\n\n# Issue\n"+problem,
 			"Grep,Glob,mcp__cola__read_file", mcp, work)
 		if err != nil {
 			res.Outcome, res.Error = "error", "scout: "+err.Error()
@@ -234,7 +346,7 @@ func RunSWEAgent(ctx context.Context, env *SWEEnv, cfg Config, s *SWE, arm strin
 		res.Info["brief"] = tail(ev.Result, 4000)
 		prompt += "\n\n# Notes from a colleague who explored the repository for this issue\nThey may be incomplete or wrong; check what you rely on.\n\n" + ev.Result
 	}
-	final, mc, err := runClaudeAgent(ctx, model, effort, agentSystem, prompt, tools, mcp, work)
+	final, mc, err := runClaudeAgent(ctx, model, effort, system, prompt, tools, mcp, work)
 	if err != nil {
 		res.Outcome, res.Error = "error", err.Error()
 		return res

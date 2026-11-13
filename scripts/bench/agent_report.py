@@ -1,7 +1,7 @@
-"""Section 9: diet-cola inside a multi-turn agent loop, caching on, no file list.
+"""Sections 9-12: arms inside a multi-turn agent loop, caching on, no file list.
 
-usage: agent_report.py swe45-agent.jsonl [swe45-opus.jsonl swe20-holdout.jsonl swe45-cola.jsonl]
-  the optional files add the single-call arms of section 8 for reference.
+usage: agent_report.py swe45-agent.jsonl [more agent files...] [swe45-opus.jsonl swe20-holdout.jsonl swe45-cola.jsonl]
+  the optional single-call files add the arms of section 8 for reference.
 """
 import collections
 import json
@@ -9,11 +9,14 @@ import math
 import statistics
 import sys
 
+AGENT = ("agent-full", "agent-cola", "agent-haiku", "agent-scout", "agent-low", "agent-medium", "agent-sonnet",
+         "agent-db", "agent-embed", "agent-graphify", "agent-graft")
+INDEX_TOOLS = ("search_code", "symbol", "callers", "callees", "semantic_search")
 arms = collections.defaultdict(dict)
 for p in sys.argv[1:]:
     for l in open(p):
         r = json.loads(l)
-        if r.get("arm") in ("agent-full", "agent-cola", "agent-haiku", "agent-scout", "agent-low", "agent-medium", "agent-sonnet", "large", "large-cola"):
+        if r.get("arm") in AGENT + ("large", "large-cola"):
             arms[r["arm"]][r["exercise"]] = r
 ids = sorted(set(arms["agent-full"]) & set(arms["agent-cola"]))
 n = len(ids)
@@ -29,7 +32,7 @@ def info(r, k, d=0):
 
 
 print(f"== {n} instances, agent loop (Opus + Grep/Glob + read_file/edit[/show]), caching on, files not given")
-for a in [x for x in ("agent-full", "agent-cola", "agent-haiku", "agent-scout", "agent-low", "agent-medium", "agent-sonnet") if x in arms and set(ids) <= set(arms[x])]:
+for a in [x for x in AGENT if x in arms and set(ids) <= set(arms[x])]:
     rs = [arms[a][i] for i in ids]
     k = sum(r["pass"] for r in rs)
     errs = sum(r["outcome"] == "error" for r in rs)
@@ -52,7 +55,7 @@ for a in [x for x in ("agent-full", "agent-cola", "agent-haiku", "agent-scout", 
           f"saw every gold file {sum(info(r, 'read_gold_files') == info(r, 'gold_files', 1) for r in rs)}/{n}; "
           f"gate fired {sum(info(r, 'gated') > 0 for r in rs)}; show used {sum(info(r, 'shows') > 0 for r in rs)}; no edit {sum(info(r, 'edits_ok') == 0 for r in rs)}; "
           f"hit budget {sum(info(r, 'subtype') == 'error_max_budget_usd' for r in rs)}")
-for a in ("agent-haiku", "agent-scout", "agent-low", "agent-medium", "agent-sonnet"):
+for a in AGENT[2:]:
     if a in arms and set(ids) <= set(arms[a]):
         rs = [arms[a][i] for i in ids]
         b2 = sum(r["pass"] and not arms["agent-full"][r["exercise"]]["pass"] for r in rs)
@@ -60,6 +63,13 @@ for a in ("agent-haiku", "agent-scout", "agent-low", "agent-medium", "agent-sonn
         extra = ""
         if a == "agent-scout":
             extra = f"; scout turns {statistics.mean(info(r, 'scout_turns') for r in rs):.1f}, brief {statistics.mean(info(r, 'brief_tokens') for r in rs):.0f} tok; Opus turns {statistics.mean(info(r, 'turns') for r in rs):.1f} (full {statistics.mean(info(arms['agent-full'][i], 'turns') for i in ids):.1f})"
+        if a in ("agent-db", "agent-embed", "agent-graphify", "agent-graft"):
+            def used(r):
+                return sum(v for k, v in info(r, "tool_calls", {}).items() if k in INDEX_TOOLS or k.startswith("mcp__graft") or k.startswith("mcp__graphify") or k.startswith("graft_") or k in ("query_graph", "get_node", "get_neighbors", "shortest_path", "god_nodes"))
+            u2 = [r for r in rs if used(r)]
+            fc2 = sum(arms["agent-full"][i]["total"]["cost_usd"] for i in ids)
+            extra = (f"; cost/full {sum(r['total']['cost_usd'] for r in rs) / fc2:.2f}; index tools used on {len(u2)}/{n} tasks "
+                     f"(pass {sum(r['pass'] for r in u2)}/{len(u2)} there); prep {statistics.median(info(r, 'prep_seconds') for r in rs):.0f}s median")
         print(f"  {a} vs full: only {a} {b2}, only full {c2}, p={mcnemar(b2, c2):.2f}{extra}")
 b = sum(arms["agent-cola"][i]["pass"] and not arms["agent-full"][i]["pass"] for i in ids)
 c = sum(arms["agent-full"][i]["pass"] and not arms["agent-cola"][i]["pass"] for i in ids)
@@ -71,4 +81,4 @@ for a in ("large", "large-cola"):
     if a in arms:
         rs = [arms[a][i] for i in ids if i in arms[a]]
         print(f"  (section 8, one call, file given) {a:10s} pass {sum(r['pass'] for r in rs)}/{len(rs)}  ${statistics.mean(r['total']['cost_usd'] for r in rs):.4f}/task")
-print("\nspend (agent arms):", round(sum(r["total"]["cost_usd"] for a in ("agent-full", "agent-cola", "agent-haiku", "agent-scout", "agent-low", "agent-medium", "agent-sonnet") for r in arms.get(a, {}).values()), 2))
+print("\nspend (agent arms):", round(sum(r["total"]["cost_usd"] for a in AGENT for r in arms.get(a, {}).values()), 2))

@@ -20,6 +20,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -39,6 +40,9 @@ var (
 	ledger   = flag.String("ledger", "", "append usage and tool events here")
 	small    = flag.String("small", "haiku", "model that ranks blocks")
 	budget   = flag.Float64("budget", 0.2, "share of a cut file's tokens the view keeps beyond the picks")
+	index    = flag.String("index", "", "SQLite index built by adapters/python/index.py; adds search_code, symbol, callers, callees")
+	embed    = flag.String("embed", "", "embedding index built by adapters/python/embed.py; adds semantic_search")
+	embedPy  = flag.String("embed-python", "python3", "interpreter with fastembed and numpy")
 	whole    = flag.Int("whole", 4000, "files under this many estimated tokens are shown whole")
 )
 
@@ -279,6 +283,16 @@ func (s *server) edit(a map[string]any) (string, bool) {
 	return "Applied.", false
 }
 
+// query runs adapters/python/index.py against the index.
+func (s *server) query(args ...string) (string, bool) {
+	cmd := exec.Command(*python, append([]string{filepath.Join(*root, "adapters/python/index.py")}, args...)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "index error: " + err.Error() + ": " + string(out), true
+	}
+	return string(out), false
+}
+
 func str(v any) string {
 	s, _ := v.(string)
 	return s
@@ -318,6 +332,21 @@ func tools() []map[string]any {
 				"functions": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "names from the hidden-run markers"},
 				"lines":     p("string", "optional line range like \"120-180\"")},
 				"required": []string{"path"}}})
+	}
+	if *index != "" {
+		one := func(name, desc, arg, argDesc string) map[string]any {
+			return map[string]any{"name": name, "description": desc, "inputSchema": map[string]any{"type": "object",
+				"properties": map[string]any{arg: p("string", argDesc)}, "required": []string{arg}}}
+		}
+		ts = append(ts,
+			one("search_code", "Search an index of every function and class in the repository by name and docstring words. Returns path:lines, signature and the first line of the docstring.", "query", "words or identifiers"),
+			one("symbol", "Show the source of a function or class by name (\"Class.method\" or \"name\"), with line numbers, without reading the whole file.", "name", "function, method or class name"),
+			one("callers", "List the functions that call a function (matched by name).", "name", "function or method name"),
+			one("callees", "List what a function calls.", "name", "function or method name"))
+	}
+	if *embed != "" {
+		ts = append(ts, map[string]any{"name": "semantic_search", "description": "Search every function and class in the repository by meaning (embedding similarity to your description). Returns path:lines, signature and the first line of the docstring.",
+			"inputSchema": map[string]any{"type": "object", "properties": map[string]any{"query": p("string", "what the code does, in words")}, "required": []string{"query"}}})
 	}
 	return ts
 }
@@ -388,6 +417,20 @@ func main() {
 				text, isErr = s.show(p.Arguments)
 			case "edit":
 				text, isErr = s.edit(p.Arguments)
+			case "semantic_search":
+				out, err := exec.Command(*embedPy, filepath.Join(*root, "adapters/python/embed.py"), "search", *embed, str(p.Arguments["query"])).Output()
+				text, isErr = string(out), err != nil
+				if err != nil {
+					text = "search error: " + err.Error()
+				}
+			case "search_code":
+				text, isErr = s.query("search", *index, str(p.Arguments["query"]))
+			case "symbol":
+				text, isErr = s.query("symbol", *index, *work, str(p.Arguments["name"]))
+			case "callers":
+				text, isErr = s.query("callers", *index, str(p.Arguments["name"]))
+			case "callees":
+				text, isErr = s.query("callees", *index, str(p.Arguments["name"]))
 			default:
 				text, isErr = "unknown tool "+p.Name, true
 			}
