@@ -15,7 +15,7 @@ import re
 import subprocess
 import sys
 
-SYSTEM = """You rewrite bug reports for a Python library. The reader will fix the bug, so every fact must survive, but the rewrite must read as if written by a user who has never seen the library's source.
+SYSTEM = """You rewrite bug reports for a software project. The reader will fix the bug, so every fact must survive, but the rewrite must read as if written by a user who has never seen the project's source.
 
 Rules:
 - Keep what was done, what happened, and what should have happened, including concrete values, shapes and numbers.

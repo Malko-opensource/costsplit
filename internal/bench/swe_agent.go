@@ -289,6 +289,9 @@ func RunSWEAgent(ctx context.Context, env *SWEEnv, cfg Config, s *SWE, arm strin
 		tools += ",mcp__cola__show"
 	}
 	system := agentSystem
+	if s.LocateOnly {
+		system = strings.Replace(system, "the Python repository", "the repository", 1)
+	}
 	if noGrep {
 		tools = strings.TrimPrefix(tools, "Grep,Glob,")
 		system = strings.Replace(system, "Find the code with Grep and Glob", "Find the code with the search tools described below", 1)
@@ -422,7 +425,13 @@ func RunSWEAgent(ctx context.Context, env *SWEEnv, cfg Config, s *SWE, arm strin
 	res.Info["read_gold_files"] = gold
 	res.Info["gold_files"] = len(s.Files)
 	step("agent: %d turns, tools %v, %d edits applied", final.NumTurns, calls, editsOK)
-	res.Pass, res.ScoreOutput = s.Score(ctx, env, work)
+	if s.LocateOnly {
+		loc := s.Locate(env, work)
+		res.Info["locate"] = loc
+		res.Pass, res.ScoreOutput = loc.Hit(), loc.String()
+	} else {
+		res.Pass, res.ScoreOutput = s.Score(ctx, env, work)
+	}
 	res.Outcome = map[bool]string{true: "pass", false: "fail"}[res.Pass]
 	return res
 }

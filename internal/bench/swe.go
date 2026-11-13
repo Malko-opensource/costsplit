@@ -23,13 +23,14 @@ import (
 // Unlike Polyglot there is no stub to start from: the graybox author picks
 // which existing functions become stubs.
 type SWE struct {
-	ID        string
-	Problem   string
-	TestPatch string
-	F2P, P2P  []string
-	Files     []string // files the reference patch touches ("oracle retrieval"; the patch itself stays hidden)
-	TestFiles []string
-	gold      string // the reference patch: for diagnostics only, never shown to a model
+	ID         string
+	Problem    string
+	TestPatch  string
+	F2P, P2P   []string
+	Files      []string // files the reference patch touches ("oracle retrieval"; the patch itself stays hidden)
+	TestFiles  []string
+	LocateOnly bool   // no tests: scored by whether the edits land where the reference patch's do
+	gold       string // the reference patch: for diagnostics only, never shown to a model
 }
 
 type SWEEnv struct {
@@ -72,7 +73,9 @@ func LoadSWE(path string) (*SWE, error) {
 	for _, m := range diffFile.FindAllStringSubmatch(row.TestPatch, -1) {
 		s.TestFiles = append(s.TestFiles, m[1])
 	}
-	if len(s.Files) == 0 || len(s.TestFiles) == 0 {
+	// An instance without a test patch is scored by where the edits land (swe_locate.go).
+	s.LocateOnly = row.TestPatch == ""
+	if len(s.Files) == 0 || (len(s.TestFiles) == 0 && !s.LocateOnly) {
 		return nil, fmt.Errorf("%s: patch or test_patch names no files", path)
 	}
 	return s, nil
@@ -276,6 +279,9 @@ func applyEdits(env *SWEEnv, work string, raw json.RawMessage) error {
 	for p, c := range cur {
 		if err := os.WriteFile(filepath.Join(work, p), []byte(c), 0o644); err != nil {
 			return err
+		}
+		if !strings.HasSuffix(p, ".py") {
+			continue
 		}
 		if msg, err := exec.Command(env.Python, "-m", "py_compile", filepath.Join(work, p)).CombinedOutput(); err != nil {
 			for q, o := range orig {

@@ -1,4 +1,4 @@
-"""Section 13: any set of agent arms against one baseline arm.
+"""Sections 13-14: any set of agent arms against one baseline arm.
 
 usage: arms_report.py BASELINE_ARM results.jsonl [more.jsonl ...]
   later files override earlier ones for the same arm and task (reruns).
@@ -51,5 +51,9 @@ for a in [base] + sorted(x for x in arms if x != base):
     print(f"{'':28s} tokens/task: output {statistics.mean(x.get('output_tokens', 0) for x in u):.0f}, cache read {statistics.mean(x.get('cache_read_input_tokens', 0) for x in u):.0f}, "
           f"cache write {statistics.mean(x.get('cache_creation_input_tokens', 0) for x in u):.0f}; read_file view {statistics.mean(info(r, 'view_tokens') for r in rs):.0f}; "
           f"saw every gold file {sum(info(r, 'read_gold_files') == info(r, 'gold_files', 1) for r in rs)}/{n}; no edit {sum(info(r, 'edits_ok') == 0 for r in rs)}")
+    loc = [info(r, "locate", None) for r in rs]
+    if all(loc):
+        print(f"{'':28s} location scoring: every reference file edited {sum(l['files_hit'] == l['gold_files'] for l in loc)}/{n}, "
+              f"also edited other files {sum(l['extra_files'] > 0 for l in loc)}/{n}")
     print(f"{'':28s} tool calls/task {dict((short(k), round(v / n, 1)) for k, v in calls.most_common(6))}")
 print("\nspend:", round(sum(r["total"]["cost_usd"] for rs in arms.values() for r in rs.values()), 2))
