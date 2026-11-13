@@ -7,6 +7,10 @@ package bench
 //
 //	agent-full  read_file returns the whole file
 //	agent-cola  read_file returns a diet-cola view; show and the quote gate
+//	agent-haiku the small model alone; agent-scout the small model explores
+//	            read-only and briefs the large model
+//	agent-low, agent-medium  the large model at that effort; agent-sonnet
+//	            the middle model
 //
 // Grep and Glob are the built-in search tools in both arms. The agent cannot
 // run code.
@@ -47,16 +51,22 @@ Do not write the fix itself.`
 
 const agentBudgetUSD = "3"
 
+// agentMid is the middle model for agent-sonnet.
+const agentMid = "claude-sonnet-5-5"
+
 // runClaudeAgent runs one `claude -p` agent in work and returns its result
 // event and tool-call counts. Caching stays on: a real agent loop re-sends
 // its history every turn.
-func runClaudeAgent(ctx context.Context, model, system, prompt, tools, mcp, work string) (*streamEvent, map[string]int, error) {
+func runClaudeAgent(ctx context.Context, model, effort, system, prompt, tools, mcp, work string) (*streamEvent, map[string]int, error) {
 	actx, cancel := context.WithTimeout(ctx, 25*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(actx, "claude", "-p", "--model", model, "--output-format", "stream-json", "--verbose",
 		"--system-prompt", system, "--tools", "Grep,Glob", "--allowedTools", tools,
 		"--mcp-config", mcp, "--strict-mcp-config", "--setting-sources", "", "--no-session-persistence",
 		"--max-budget-usd", agentBudgetUSD)
+	if effort != "" {
+		cmd.Args = append(cmd.Args, "--effort", effort)
+	}
 	cmd.Dir = work
 	cmd.Stdin = strings.NewReader(prompt)
 	for _, kv := range os.Environ() {
@@ -174,15 +184,21 @@ func RunSWEAgent(ctx context.Context, env *SWEEnv, cfg Config, s *SWE, arm strin
 		tools += ",mcp__cola__show"
 	}
 	model, role := cfg.Large, "large"
-	if mode == "haiku" {
+	effort := ""
+	switch mode {
+	case "haiku":
 		model, role = cfg.Small, "small"
+	case "low", "medium":
+		effort = mode
+	case "sonnet":
+		model, role = agentMid, "mid"
 	}
 	prompt := "Fix this issue.\n\n# Issue\n" + s.Problem
 	calls := map[string]int{}
 	addUsage := func(ev *streamEvent, role string) {
 		for m, u := range ev.ModelUsage {
 			r := role
-			if !strings.Contains(m, "opus") && !strings.Contains(m, "haiku") {
+			if !strings.Contains(m, "opus") && !strings.Contains(m, "haiku") && !strings.Contains(m, "sonnet") {
 				r = "agent:" + m
 			}
 			cur := res.Usage[r]
@@ -203,7 +219,7 @@ func RunSWEAgent(ctx context.Context, env *SWEEnv, cfg Config, s *SWE, arm strin
 	if mode == "scout" {
 		// The small model explores read-only and writes a brief; the large
 		// model starts from it with the same tools as agent-full.
-		ev, sc, err := runClaudeAgent(ctx, cfg.Small, scoutSystem, "Find the code involved in this issue.\n\n# Issue\n"+s.Problem,
+		ev, sc, err := runClaudeAgent(ctx, cfg.Small, "", scoutSystem, "Find the code involved in this issue.\n\n# Issue\n"+s.Problem,
 			"Grep,Glob,mcp__cola__read_file", mcp, work)
 		if err != nil {
 			res.Outcome, res.Error = "error", "scout: "+err.Error()
@@ -218,7 +234,7 @@ func RunSWEAgent(ctx context.Context, env *SWEEnv, cfg Config, s *SWE, arm strin
 		res.Info["brief"] = tail(ev.Result, 4000)
 		prompt += "\n\n# Notes from a colleague who explored the repository for this issue\nThey may be incomplete or wrong; check what you rely on.\n\n" + ev.Result
 	}
-	final, mc, err := runClaudeAgent(ctx, model, agentSystem, prompt, tools, mcp, work)
+	final, mc, err := runClaudeAgent(ctx, model, effort, agentSystem, prompt, tools, mcp, work)
 	if err != nil {
 		res.Outcome, res.Error = "error", err.Error()
 		return res
