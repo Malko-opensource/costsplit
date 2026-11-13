@@ -38,7 +38,61 @@ Find the code with Grep and Glob, read files with read_file, and change them wit
 Do not add or change tests. Make the smallest change that fixes the issue.
 When the fix is in place, stop and reply with one line saying what you changed.`
 
+const scoutSystem = `You explore the Python repository in the current directory for a colleague who will fix an issue. You cannot change files or run code.
+Find the code involved with Grep, Glob and read_file. Then reply with a brief for the colleague:
+- the files and functions involved, with line numbers;
+- the relevant code, quoted verbatim with line numbers (only what matters: at most about 150 lines in all);
+- what causes the issue, if you found it, and where the fix probably belongs.
+Do not write the fix itself.`
+
 const agentBudgetUSD = "3"
+
+// runClaudeAgent runs one `claude -p` agent in work and returns its result
+// event and tool-call counts. Caching stays on: a real agent loop re-sends
+// its history every turn.
+func runClaudeAgent(ctx context.Context, model, system, prompt, tools, mcp, work string) (*streamEvent, map[string]int, error) {
+	actx, cancel := context.WithTimeout(ctx, 25*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(actx, "claude", "-p", "--model", model, "--output-format", "stream-json", "--verbose",
+		"--system-prompt", system, "--tools", "Grep,Glob", "--allowedTools", tools,
+		"--mcp-config", mcp, "--strict-mcp-config", "--setting-sources", "", "--no-session-persistence",
+		"--max-budget-usd", agentBudgetUSD)
+	cmd.Dir = work
+	cmd.Stdin = strings.NewReader(prompt)
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "DISABLE_PROMPT_CACHING=") {
+			cmd.Env = append(cmd.Env, kv)
+		}
+	}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	runErr := cmd.Run()
+	calls := map[string]int{}
+	var final *streamEvent
+	sc := bufio.NewScanner(&stdout)
+	sc.Buffer(make([]byte, 1<<20), 256<<20)
+	for sc.Scan() {
+		var ev streamEvent
+		if json.Unmarshal(sc.Bytes(), &ev) != nil {
+			continue
+		}
+		switch ev.Type {
+		case "assistant":
+			for _, c := range ev.Message.Content {
+				if c.Type == "tool_use" {
+					calls[strings.TrimPrefix(c.Name, "mcp__cola__")]++
+				}
+			}
+		case "result":
+			e := ev
+			final = &e
+		}
+	}
+	if final == nil {
+		return nil, calls, fmt.Errorf("agent: %v: %s", runErr, tail(stderr.String(), 400))
+	}
+	return final, calls, nil
+}
 
 func agentBin(env *SWEEnv) string {
 	if b := os.Getenv("COLAMCP_BIN"); b != "" {
@@ -96,6 +150,10 @@ func RunSWEAgent(ctx context.Context, env *SWEEnv, cfg Config, s *SWE, arm strin
 		return res
 	}
 	defer cleanup()
+	serverMode := mode
+	if mode != "cola" {
+		serverMode = "full"
+	}
 	side := filepath.Dir(work) // holds the task, ledger and MCP config, outside the repository
 	task, ledger, mcp := filepath.Join(side, "task.md"), filepath.Join(side, "ledger.jsonl"), filepath.Join(side, "mcp.json")
 	if err := os.WriteFile(task, []byte(s.Problem), 0o644); err != nil {
@@ -104,7 +162,7 @@ func RunSWEAgent(ctx context.Context, env *SWEEnv, cfg Config, s *SWE, arm strin
 	}
 	conf, _ := json.Marshal(map[string]any{"mcpServers": map[string]any{"cola": map[string]any{
 		"command": agentBin(env),
-		"args": []string{"-mode", mode, "-work", work, "-python", env.Python, "-root", env.RepoRoot,
+		"args": []string{"-mode", serverMode, "-work", work, "-python", env.Python, "-root", env.RepoRoot,
 			"-task", task, "-ledger", ledger, "-small", cfg.Small},
 	}}})
 	if err := os.WriteFile(mcp, conf, 0o644); err != nil {
@@ -115,76 +173,63 @@ func RunSWEAgent(ctx context.Context, env *SWEEnv, cfg Config, s *SWE, arm strin
 	if mode == "cola" {
 		tools += ",mcp__cola__show"
 	}
-	actx, cancel := context.WithTimeout(ctx, 25*time.Minute)
-	defer cancel()
-	cmd := exec.CommandContext(actx, "claude", "-p", "--model", cfg.Large, "--output-format", "stream-json", "--verbose",
-		"--system-prompt", agentSystem, "--tools", "Grep,Glob", "--allowedTools", tools,
-		"--mcp-config", mcp, "--strict-mcp-config", "--setting-sources", "", "--no-session-persistence",
-		"--max-budget-usd", agentBudgetUSD)
-	cmd.Dir = work
-	cmd.Stdin = strings.NewReader("Fix this issue.\n\n# Issue\n" + s.Problem)
-	// Caching on: a real agent loop re-sends its history every turn.
-	for _, kv := range os.Environ() {
-		if !strings.HasPrefix(kv, "DISABLE_PROMPT_CACHING=") {
-			cmd.Env = append(cmd.Env, kv)
-		}
+	model, role := cfg.Large, "large"
+	if mode == "haiku" {
+		model, role = cfg.Small, "small"
 	}
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	runErr := cmd.Run()
-
+	prompt := "Fix this issue.\n\n# Issue\n" + s.Problem
 	calls := map[string]int{}
-	grepChars := 0
-	var final *streamEvent
-	sc := bufio.NewScanner(&stdout)
-	sc.Buffer(make([]byte, 1<<20), 256<<20)
-	for sc.Scan() {
-		var ev streamEvent
-		if json.Unmarshal(sc.Bytes(), &ev) != nil {
-			continue
+	addUsage := func(ev *streamEvent, role string) {
+		for m, u := range ev.ModelUsage {
+			r := role
+			if !strings.Contains(m, "opus") && !strings.Contains(m, "haiku") {
+				r = "agent:" + m
+			}
+			cur := res.Usage[r]
+			cur.Add(Usage{CostUSD: u.CostUSD, InputTokens: u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens, OutputTokens: u.OutputTokens})
+			res.Usage[r] = cur
 		}
-		switch ev.Type {
-		case "assistant":
-			for _, c := range ev.Message.Content {
-				if c.Type == "tool_use" {
-					calls[strings.TrimPrefix(c.Name, "mcp__cola__")]++
-				}
-			}
-		case "user":
-			for _, c := range ev.Message.Content {
-				if c.Type == "tool_result" {
-					grepChars += len(c.Content) // all tool results; MCP ones are also in the ledger
-				}
-			}
-		case "result":
-			e := ev
-			final = &e
+		if len(ev.ModelUsage) == 0 {
+			cur := res.Usage[role]
+			cur.Add(Usage{CostUSD: ev.TotalCostUSD})
+			res.Usage[role] = cur
+		}
+		if cur, ok := res.Usage[role]; ok {
+			cur.Calls += ev.NumTurns
+			cur.DurationMS += ev.DurationMS
+			res.Usage[role] = cur
 		}
 	}
-	if final == nil {
-		res.Outcome, res.Error = "error", fmt.Sprintf("agent: %v: %s", runErr, tail(stderr.String(), 400))
+	if mode == "scout" {
+		// The small model explores read-only and writes a brief; the large
+		// model starts from it with the same tools as agent-full.
+		ev, sc, err := runClaudeAgent(ctx, cfg.Small, scoutSystem, "Find the code involved in this issue.\n\n# Issue\n"+s.Problem,
+			"Grep,Glob,mcp__cola__read_file", mcp, work)
+		if err != nil {
+			res.Outcome, res.Error = "error", "scout: "+err.Error()
+			return res
+		}
+		addUsage(ev, "scout")
+		for k, v := range sc {
+			calls["scout:"+k] += v
+		}
+		res.Info["scout_turns"], res.Info["scout_usage"] = ev.NumTurns, ev.Usage
+		res.Info["brief_tokens"] = len(ev.Result) / 4
+		res.Info["brief"] = tail(ev.Result, 4000)
+		prompt += "\n\n# Notes from a colleague who explored the repository for this issue\nThey may be incomplete or wrong; check what you rely on.\n\n" + ev.Result
+	}
+	final, mc, err := runClaudeAgent(ctx, model, agentSystem, prompt, tools, mcp, work)
+	if err != nil {
+		res.Outcome, res.Error = "error", err.Error()
 		return res
 	}
-	for model, u := range final.ModelUsage {
-		role := "agent:" + model
-		if model == cfg.Large || strings.Contains(model, "opus") {
-			role = "large"
-		}
-		cur := res.Usage[role]
-		cur.Add(Usage{CostUSD: u.CostUSD, InputTokens: u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens, OutputTokens: u.OutputTokens})
-		res.Usage[role] = cur
-	}
-	if len(final.ModelUsage) == 0 {
-		res.Usage["large"] = Usage{CostUSD: final.TotalCostUSD}
-	}
-	if u, ok := res.Usage["large"]; ok {
-		u.Calls, u.DurationMS = final.NumTurns, final.DurationMS
-		res.Usage["large"] = u
+	addUsage(final, role)
+	for k, v := range mc {
+		calls[k] += v
 	}
 	res.Info["turns"] = final.NumTurns
 	res.Info["subtype"] = final.Subtype
 	res.Info["tool_calls"] = calls
-	res.Info["tool_result_chars"] = grepChars
 	res.Info["usage"] = final.Usage
 	res.Hint = tail(final.Result, 400)
 	if final.IsError {

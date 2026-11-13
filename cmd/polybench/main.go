@@ -258,7 +258,7 @@ func sweCmd(args []string) {
 					r = bench.RunSWESingle(ctx, t.env, cfg, t.s, "large", cfg.Large)
 				case "graybox":
 					r = bench.RunSWEGraybox(ctx, t.env, cfg, t.s)
-				case "agent-full", "agent-cola":
+				case "agent-full", "agent-cola", "agent-haiku", "agent-scout":
 					r = bench.RunSWEAgent(ctx, t.env, cfg, t.s, a)
 				case "check":
 					r = bench.SWECheck(ctx, t.env, t.s)

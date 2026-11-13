@@ -13,7 +13,7 @@ arms = collections.defaultdict(dict)
 for p in sys.argv[1:]:
     for l in open(p):
         r = json.loads(l)
-        if r.get("arm") in ("agent-full", "agent-cola", "large", "large-cola"):
+        if r.get("arm") in ("agent-full", "agent-cola", "agent-haiku", "agent-scout", "large", "large-cola"):
             arms[r["arm"]][r["exercise"]] = r
 ids = sorted(set(arms["agent-full"]) & set(arms["agent-cola"]))
 n = len(ids)
@@ -29,7 +29,7 @@ def info(r, k, d=0):
 
 
 print(f"== {n} instances, agent loop (Opus + Grep/Glob + read_file/edit[/show]), caching on, files not given")
-for a in ("agent-full", "agent-cola"):
+for a in [x for x in ("agent-full", "agent-cola", "agent-haiku", "agent-scout") if x in arms and set(ids) <= set(arms[x])]:
     rs = [arms[a][i] for i in ids]
     k = sum(r["pass"] for r in rs)
     errs = sum(r["outcome"] == "error" for r in rs)
@@ -52,6 +52,15 @@ for a in ("agent-full", "agent-cola"):
           f"saw every gold file {sum(info(r, 'read_gold_files') == info(r, 'gold_files', 1) for r in rs)}/{n}; "
           f"gate fired {sum(info(r, 'gated') > 0 for r in rs)}; show used {sum(info(r, 'shows') > 0 for r in rs)}; no edit {sum(info(r, 'edits_ok') == 0 for r in rs)}; "
           f"hit budget {sum(info(r, 'subtype') == 'error_max_budget_usd' for r in rs)}")
+for a in ("agent-haiku", "agent-scout"):
+    if a in arms and set(ids) <= set(arms[a]):
+        rs = [arms[a][i] for i in ids]
+        b2 = sum(r["pass"] and not arms["agent-full"][r["exercise"]]["pass"] for r in rs)
+        c2 = sum(arms["agent-full"][r["exercise"]]["pass"] and not r["pass"] for r in rs)
+        extra = ""
+        if a == "agent-scout":
+            extra = f"; scout turns {statistics.mean(info(r, 'scout_turns') for r in rs):.1f}, brief {statistics.mean(info(r, 'brief_tokens') for r in rs):.0f} tok; Opus turns {statistics.mean(info(r, 'turns') for r in rs):.1f} (full {statistics.mean(info(arms['agent-full'][i], 'turns') for i in ids):.1f})"
+        print(f"  {a} vs full: only {a} {b2}, only full {c2}, p={mcnemar(b2, c2):.2f}{extra}")
 b = sum(arms["agent-cola"][i]["pass"] and not arms["agent-full"][i]["pass"] for i in ids)
 c = sum(arms["agent-full"][i]["pass"] and not arms["agent-cola"][i]["pass"] for i in ids)
 print(f"\n  cola vs full: only cola {b}, only full {c}, McNemar p={mcnemar(b, c):.2f}")
@@ -62,4 +71,4 @@ for a in ("large", "large-cola"):
     if a in arms:
         rs = [arms[a][i] for i in ids if i in arms[a]]
         print(f"  (section 8, one call, file given) {a:10s} pass {sum(r['pass'] for r in rs)}/{len(rs)}  ${statistics.mean(r['total']['cost_usd'] for r in rs):.4f}/task")
-print("\nspend (agent arms):", round(sum(r["total"]["cost_usd"] for a in ("agent-full", "agent-cola") for r in arms[a].values()), 2))
+print("\nspend (agent arms):", round(sum(r["total"]["cost_usd"] for a in ("agent-full", "agent-cola", "agent-haiku", "agent-scout") for r in arms.get(a, {}).values()), 2))
