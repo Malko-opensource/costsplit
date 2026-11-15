@@ -23,13 +23,14 @@ import (
 // Unlike Polyglot there is no stub to start from: the graybox author picks
 // which existing functions become stubs.
 type SWE struct {
-	ID        string
-	Problem   string
-	TestPatch string
-	F2P, P2P  []string
-	Files     []string // files the reference patch touches ("oracle retrieval"; the patch itself stays hidden)
-	TestFiles []string
-	gold      string // the reference patch: for diagnostics only, never shown to a model
+	ID         string
+	Problem    string
+	TestPatch  string
+	F2P, P2P   []string
+	Files      []string // files the reference patch touches ("oracle retrieval"; the patch itself stays hidden)
+	TestFiles  []string
+	LocateOnly bool   // no tests: scored by whether the edits land where the reference patch's do
+	gold       string // the reference patch: for diagnostics only, never shown to a model
 }
 
 type SWEEnv struct {
@@ -72,7 +73,9 @@ func LoadSWE(path string) (*SWE, error) {
 	for _, m := range diffFile.FindAllStringSubmatch(row.TestPatch, -1) {
 		s.TestFiles = append(s.TestFiles, m[1])
 	}
-	if len(s.Files) == 0 || len(s.TestFiles) == 0 {
+	// An instance without a test patch is scored by where the edits land (swe_locate.go).
+	s.LocateOnly = row.TestPatch == ""
+	if len(s.Files) == 0 || (len(s.TestFiles) == 0 && !s.LocateOnly) {
 		return nil, fmt.Errorf("%s: patch or test_patch names no files", path)
 	}
 	return s, nil
@@ -101,6 +104,55 @@ func (s *SWE) prepare(env *SWEEnv, arm string) (work string, cleanup func(), err
 	return work, func() { os.RemoveAll(tmp) }, nil
 }
 
+func (s *SWE) django() bool { return strings.HasPrefix(s.ID, "django__") }
+
+var djangoTestLine = regexp.MustCompile(`^(\S+ \([\w.]+\))`)
+
+// runDjangoTests runs the instance's test modules with Django's own runner,
+// which names tests "test_x (module.Class)" as SWE-bench records them.
+func (s *SWE) runDjangoTests(ctx context.Context, env *SWEEnv, work string) (string, map[string]bool) {
+	args := []string{"runtests.py", "--parallel", "1", "-v", "2"}
+	for _, f := range s.TestFiles {
+		if rest, ok := strings.CutPrefix(f, "tests/"); ok && strings.HasSuffix(rest, ".py") {
+			args = append(args, strings.ReplaceAll(strings.TrimSuffix(rest, ".py"), "/", "."))
+		}
+	}
+	cmd := exec.CommandContext(ctx, env.Python, args...)
+	cmd.Dir = filepath.Join(work, "tests")
+	cmd.Env = append(os.Environ(), "PYTHONPATH="+work, "LANG=en_US.UTF-8", "LC_ALL=en_US.UTF-8")
+	var buf bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &buf, &buf
+	_ = cmd.Run()
+	out := buf.String()
+	return out, djangoPassed(out)
+}
+
+// djangoPassed reads unittest's verbose output. A test with a docstring
+// prints its name on one line and "docstring ... ok" on the next.
+func djangoPassed(out string) map[string]bool {
+	passed := map[string]bool{}
+	pending := ""
+	for _, ln := range strings.Split(out, "\n") {
+		name := ""
+		if m := djangoTestLine.FindStringSubmatch(ln); m != nil {
+			name = m[1]
+		}
+		if strings.HasSuffix(strings.TrimSpace(ln), "... ok") {
+			if name != "" {
+				passed[name] = true
+			} else if pending != "" {
+				passed[pending] = true
+			}
+			pending = ""
+		} else if name != "" && !strings.Contains(ln, " ... ") {
+			pending = name
+		} else if strings.Contains(ln, " ... ") {
+			pending = ""
+		}
+	}
+	return passed
+}
+
 // Score applies the hidden test patch and requires every FAIL_TO_PASS and
 // PASS_TO_PASS test to pass.
 func (s *SWE) Score(ctx context.Context, env *SWEEnv, work string) (bool, string) {
@@ -124,17 +176,23 @@ func (s *SWE) Score(ctx context.Context, env *SWEEnv, work string) (bool, string
 	if out, err := ap.CombinedOutput(); err != nil {
 		return false, fmt.Sprintf("test patch does not apply: %v: %s", err, out)
 	}
-	args := append([]string{"-m", "pytest", "-q", "-rA", "-p", "no:cacheprovider"}, s.TestFiles...)
-	cmd := exec.CommandContext(ctx, env.Python, args...)
-	cmd.Dir = work
-	var buf bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &buf, &buf
-	_ = cmd.Run()
-	out := buf.String()
-	passed := map[string]bool{}
-	for _, ln := range strings.Split(out, "\n") {
-		if rest, ok := strings.CutPrefix(ln, "PASSED "); ok {
-			passed[rest[strings.LastIndex(rest, "::")+2:]] = true
+	var out string
+	var passed map[string]bool
+	if s.django() {
+		out, passed = s.runDjangoTests(ctx, env, work)
+	} else {
+		args := append([]string{"-m", "pytest", "-q", "-rA", "-p", "no:cacheprovider"}, s.TestFiles...)
+		cmd := exec.CommandContext(ctx, env.Python, args...)
+		cmd.Dir = work
+		var buf bytes.Buffer
+		cmd.Stdout, cmd.Stderr = &buf, &buf
+		_ = cmd.Run()
+		out = buf.String()
+		passed = map[string]bool{}
+		for _, ln := range strings.Split(out, "\n") {
+			if rest, ok := strings.CutPrefix(ln, "PASSED "); ok {
+				passed[rest[strings.LastIndex(rest, "::")+2:]] = true
+			}
 		}
 	}
 	var missing []string
@@ -221,6 +279,9 @@ func applyEdits(env *SWEEnv, work string, raw json.RawMessage) error {
 	for p, c := range cur {
 		if err := os.WriteFile(filepath.Join(work, p), []byte(c), 0o644); err != nil {
 			return err
+		}
+		if !strings.HasSuffix(p, ".py") {
+			continue
 		}
 		if msg, err := exec.Command(env.Python, "-m", "py_compile", filepath.Join(work, p)).CombinedOutput(); err != nil {
 			for q, o := range orig {

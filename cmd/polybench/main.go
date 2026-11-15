@@ -261,6 +261,10 @@ func sweCmd(args []string) {
 				case "check":
 					r = bench.SWECheck(ctx, t.env, t.s)
 				default:
+					if strings.HasPrefix(a, "agent-") {
+						r = bench.RunSWEAgent(ctx, t.env, cfg, t.s, a)
+						break
+					}
 					role, opt, ok := bench.ParseSWEArm(a)
 					if !ok {
 						die(fmt.Errorf("unknown arm %q", a))

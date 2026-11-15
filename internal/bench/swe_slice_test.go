@@ -35,6 +35,12 @@ func TestParseSWEArm(t *testing.T) {
 	if !ok || role != "large" || opt != want {
 		t.Errorf("large-hleanarch2: got %q %+v ok=%v", role, opt, ok)
 	}
+	if _, opt, ok := ParseSWEArm("large-colaarch"); !ok || !opt.Cola || !opt.ColaArch {
+		t.Errorf("large-colaarch: got %+v ok=%v", opt, ok)
+	}
+	if _, _, ok := ParseSWEArm("small-cola"); ok {
+		t.Error("small-cola: the reading model of a cola arm is the large one")
+	}
 	if _, opt, ok := ParseSWEArm("small-locate"); !ok || !opt.LocateOnly {
 		t.Errorf("small-locate: got %+v ok=%v", opt, ok)
 	}
@@ -172,4 +178,34 @@ func TestSlicer(t *testing.T) {
 			t.Errorf("blocks: %+v", sl.Blocks)
 		}
 	})
+}
+
+func TestGoldLinesByFile(t *testing.T) {
+	s := &SWE{gold: `diff --git a/a.py b/a.py
+--- a/a.py
++++ b/a.py
+@@ -3,2 +3,2 @@
+-x = 1
++x = 2
+ y = 1
+diff --git a/b.py b/b.py
+--- a/b.py
++++ b/b.py
+@@ -7,1 +7,2 @@
+ z = 1
++w = 2
+`}
+	want := map[string][]int{"a.py": {3}, "b.py": {7}}
+	if got := s.GoldLinesByFile(); !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+func TestStripLineNumbers(t *testing.T) {
+	if got := stripLineNumbers("  12|     x = 1\n  13|     return x"); got != "    x = 1\n    return x" {
+		t.Errorf("got %q", got)
+	}
+	if in := "    x = 1  # 12| not a prefix\n    y = 2"; stripLineNumbers(in) != in {
+		t.Error("text without prefixes must not change")
+	}
 }

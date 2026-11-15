@@ -8,11 +8,35 @@
 - 기존 코드 수정에서 큰 모델 비용의 80%는 파일 읽기였습니다. 작은 모델이 읽고 고르고, 큰 모델이 조각만 보고 지시하고, 작은 모델이 편집하면 비용이 64% 줄었고 통과 수는 통계적으로 구분되지 않았습니다(45문제 중 32 대 34).
 - 큰 모델이 구조를 미리 고정하고 작은 모델이 함수 본문을 채우는 방식(`graybox`)은 비용을 줄이지 못했습니다.
 - 모델이 내리는 통과 판정은 13~40%가 틀렸습니다.
+- 도구 출력을 줄여 넘기는 압축(diet-cola)은 70%를 줄였을 때 HotpotQA 근거 문장을 92% 남겼습니다. 고칠 함수는 62~67%만 남았습니다. 그래도 숨긴 함수 이름을 남긴 압축본을 읽은 Opus는 전체를 읽을 때와 같은 위치를 지목했고, 비용은 53% 줄었습니다. 본문이 필요한데 숨겨져 있으면 71%는 다시 열었고, 나머지는 기억한 코드로 답했습니다. 보지 않은 줄을 인용한 답을 돌려보내는 관문을 두자 그런 답은 0개가 됐습니다. 이 화면을 읽고 Opus가 직접 고치면 SWE-bench sympy 45문제 중 36개를 통과했습니다. Opus 단독은 34개였고, 비용은 35% 적었습니다. 하지만 파일을 직접 찾고 캐시를 쓰는 실제 에이전트 루프의 읽기 도구로 넣으면, 통과는 같고 비용은 36% 늘었습니다. 에이전트는 이미 검색으로 필요한 줄만 읽고 있었습니다. Haiku가 먼저 탐색해 브리핑을 줘도 Opus는 스스로 다시 확인해 비용이 늘었습니다. 에이전트 비용을 실제로 줄인 것은 Opus의 effort를 low로 낮춘 것이었습니다(비용 32% 감소, 통과 3문제 감소). 저장소를 SQLite, 임베딩, graphify, graft로 색인해 도구로 줘도 통과와 비용은 달라지지 않았고, Opus는 색인 도구를 거의 부르지 않고 Grep으로 찾았습니다. Grep을 빼면 색인 도구로도 같은 수를 풀었지만 비용은 줄지 않았고, 이슈에서 코드 이름을 지워도 Grep만으로 같은 수를 풀었습니다. django 45문제는 sympy보다 쉬워서 Opus가 91%를 절반 가까운 비용에 풀었고, Opus low(93%)와 Haiku 단독(76%, 비용 20분의 1)도 통했습니다. 싼 모델로 내릴 수 있는 폭은 저장소와 문제 크기에 따라 달랐습니다. 테스트가 없는 C·C++ 저장소(OBS Studio)에서는 고친 위치로 채점했고, Opus 비용이 sympy의 2.5배였으며 Opus low와 Haiku는 위치를 더 많이 놓쳤습니다.
+
+## 저장소 보정: `costsplit calibrate`
+
+싼 설정이 통하는지는 저장소마다 달랐습니다(findings 13, 14절). 그래서 저장소의 과거 버그 수정으로 설정을 직접 재 보고 권고를 내는 명령을 만들었습니다.
+
+```bash
+go build -o bin/costsplit ./cmd/costsplit && go build -o bin/colamcp ./cmd/colamcp
+bin/costsplit calibrate -repo owner/name -dry-run     # 과제만 모으고 멈춤 (모델 호출 없음)
+bin/costsplit calibrate -repo owner/name -max-usd 30  # 과제 45개 x 설정 3개 실행 후 권고 출력
+```
+
+- **과제:** 이슈 하나를 닫는 병합된 PR 중 소스 파일 3개 이하, 60줄 이하를 바꾼 것을 모읍니다. 이슈의 제목과 본문만 에이전트에 줍니다.
+- **설정:** 큰 모델 기본값(`agent-full`), 큰 모델 추론량 low(`agent-low`), 작은 모델(`agent-haiku`). `-arms`로 바꿉니다. 첫 번째가 기준입니다.
+- **채점:** 에이전트가 실제 수정과 같은 파일의 15줄 이내를 고쳤는지 봅니다. 수정이 옳은지는 재지 않습니다.
+- **권고:** 기준 대비 순손실이 과제의 5%(45개면 2개) 이하인 설정 중 가장 싼 것입니다. 과제가 20개보다 적으면 잠정 권고로 표시합니다.
+- **비용:** 지금까지 저장소당 $20~50였습니다. `-max-usd`에 닿으면 새 실행을 시작하지 않고, 다시 실행하면 이어서 합니다.
+- `gh`와 `claude` CLI 로그인이 필요합니다. 결과는 `~/.costsplit/calibrate/<owner>__<name>/`에 남고, `bin/costsplit report results.jsonl`로 표를 다시 만듭니다.
+
+이 규칙을 이미 잰 세 저장소에 적용하면 django는 Opus low, sympy와 OBS Studio는 Opus 기본값이 권고됩니다.
 
 ## 들어 있는 것
 
+- `cmd/costsplit`, `internal/calibrate`: 저장소 보정 명령. 위에 설명했습니다.
 - `cmd/polybench`: 벤치마크 실행기. 같은 문제를 여러 조건(모델 단독, 작은 모델 먼저, 조각 읽기, 지시와 편집 분리 등)으로 돌리고 역할별 비용을 기록합니다.
 - `adapters/python/slice.py`: 파일에서 수정에 필요한 함수만 잘라 내는 도구.
+- `internal/cola`, `cmd/colabench`: 도구 출력을 블록으로 나눠 필요한 것만 원문 그대로 남기고, 숨긴 부분은 `expand`로 되살리는 읽기 압축 계층과 그 측정기.
+- `adapters/python/trace.py`: 이슈의 예제 코드를 실행해 대상 파일에서 호출된 함수와 traceback에 걸린 함수를 기록하는 도구(샌드박스 안에서 실행).
+- `cmd/colamcp`, `adapters/python/index.py`, `adapters/python/embed.py`: 에이전트 루프 실험용 MCP 도구 서버와 코드 색인(SQLite, 임베딩).
 - `cmd/graybox`: 처음 실험한 방식의 CLI 도구. 아래에 설명합니다.
 
 ## graybox CLI
@@ -43,6 +67,11 @@ adapters/jvm           Java 어댑터 (JavaParser, javac, JUnit 6)와 Kotlin 어
 examples/{go,python,ts,java,kotlin}/order   언어별 주문 도메인 그레이박스
 cmd/polybench          벤치마크 실행기: Aider Polyglot, SWE-bench
 internal/bench         벤치마크 조건들 (단독, graybox, 작은 모델 먼저, 조각 읽기)
+internal/cola          읽기 압축: 블록 나누기, 순위(BM25, 모델), 예산, 표시와 expand
+cmd/colabench          읽기 압축 측정: 줄인 뒤에도 필요한 부분이 남는가 (SWE-bench, HotpotQA)
+cmd/colamcp            에이전트용 MCP 파일 도구: read_file(전체 또는 diet-cola 화면), show, edit
+adapters/python/index.py   저장소의 함수·클래스·호출 관계를 SQLite에 넣고 질의하는 도구
+adapters/python/embed.py   함수와 클래스를 로컬 모델로 임베딩해 의미로 찾는 도구 (fastembed 필요)
 adapters/python/slice.py   파일에서 수정에 필요한 부분만 잘라 내는 도구
 scripts/bench          문제 검증과 결과 표 스크립트
 docs/findings.md       벤치마크 결과
